@@ -53,5 +53,7 @@ OUT="$ROOT/../app/src/main/jniLibs/arm64-v8a"
 INC="$ROOT/../app/src/main/cpp/include"
 mkdir -p "$OUT" "$INC"
 cp sobin/libgs.so "$OUT/libgs.so"
-cp psi/iapi.h psi/ierrors.h "$INC/"
+# gserrors.h (base/) is pulled in by ierrors.h but lives outside psi/ — without
+# it, gsjni.c fails to compile with "use of undeclared identifier gs_error_Quit".
+cp psi/iapi.h psi/ierrors.h base/gserrors.h "$INC/"
 echo "OK: $OUT/libgs.so"
