@@ -26,6 +26,7 @@ import dev.jaspreet.printserver.relay.IppRelayServer
 import dev.jaspreet.printserver.relay.Raw9100Relay
 import dev.jaspreet.printserver.usb.UsbPrinterManager
 import dev.jaspreet.printserver.usb.UsbTransport
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 class ServerService : Service() {
@@ -33,8 +34,10 @@ class ServerService : Service() {
     private var pool: ChannelPool? = null
     private var ippServer: IppRelayServer? = null
     private var rawRelay: Raw9100Relay? = null
+    private var legacyTransport: UsbTransport? = null
     private var advertiser: DiscoveryAdvertiser? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private val pipelineActive = AtomicBoolean(false)
 
     private val detachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -57,7 +60,9 @@ class ServerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification("Starting print server…"))
-        thread(name = "pipeline-start") { startPipeline() }
+        if (pipelineActive.compareAndSet(false, true)) {
+            thread(name = "pipeline-start") { startPipeline() }
+        }
         return START_STICKY
     }
 
@@ -121,6 +126,7 @@ class ServerService : Service() {
     ) {
         val transport = usb.openLegacyTransport(device)
             ?: return fail("Printer has no usable USB interface")
+        legacyTransport = transport
         val relay = Raw9100Relay(RAW_PORT) { transport }.also { rawRelay = it }
         relay.start(bindAddr)
         advertiser = NsdAdvertiser(this).also { it.advertiseRaw(name, RAW_PORT) }
@@ -142,7 +148,9 @@ class ServerService : Service() {
         advertiser?.stopAll(); advertiser = null
         ippServer?.stop(); ippServer = null
         rawRelay?.stop(); rawRelay = null
+        legacyTransport?.close(); legacyTransport = null
         pool?.closeAll(); pool = null
+        pipelineActive.set(false)
     }
 
     override fun onDestroy() {
