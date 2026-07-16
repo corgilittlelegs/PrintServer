@@ -38,6 +38,9 @@ fi
 mkdir -p "$CPPDIR/hpcups" "$CPPDIR/cupsraster/cups"
 cp -R hplip-3.24.4/prnt/hpcups/* "$CPPDIR/hpcups/"
 cp -R hplip-3.24.4/common "$CPPDIR/hpcups-common"
+# Prebuilt x86 image-processor plugin blobs — wrong arch for this build and
+# unused anyway (DISABLE_IMAGEPROCESSOR is set; see CMakeLists.txt).
+rm -f "$CPPDIR/hpcups/libImageProcessor-x86_32.so" "$CPPDIR/hpcups/libImageProcessor-x86_64.so"
 
 # hpcups/Utils.h and hpcups-common/utils.h are DIFFERENT files that collide on
 # a case-insensitive filesystem (macOS): a quoted #include "utils.h" from a
