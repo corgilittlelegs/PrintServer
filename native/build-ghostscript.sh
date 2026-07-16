@@ -47,7 +47,9 @@ cd "ghostscript-$GS_VERSION"
   --without-x --without-tesseract --without-libpaper \
   --with-drivers=FILES
 
-make -j"$(sysctl -n hw.ncpu)" CCAUX="$CCAUX" so
+# LDFLAGS: 16KB-page-size devices (Android 15+) require ELF LOAD segments
+# aligned to 16KB; the NDK's default linker output is 4KB-aligned.
+make -j"$(sysctl -n hw.ncpu)" CCAUX="$CCAUX" LDFLAGS="-Wl,-z,max-page-size=16384" so
 
 OUT="$ROOT/../app/src/main/jniLibs/arm64-v8a"
 INC="$ROOT/../app/src/main/cpp/include"

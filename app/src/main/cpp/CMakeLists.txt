@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(printserver_native C CXX)
 
+# 16KB-page-size devices (Android 15+) require ELF LOAD segments aligned to
+# 16KB; the NDK's default linker output is 4KB-aligned. Applies to gsjni and
+# hpcupsjni (built here); libgs.so is prebuilt separately by
+# native/build-ghostscript.sh, which sets the matching LDFLAGS itself.
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
+
 add_library(gs SHARED IMPORTED)
 set_target_properties(gs PROPERTIES IMPORTED_LOCATION
     ${CMAKE_SOURCE_DIR}/../jniLibs/arm64-v8a/libgs.so)
