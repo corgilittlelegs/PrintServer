@@ -1,9 +1,11 @@
 package dev.jaspreet.printserver.relay
 
+import android.util.Log
 import dev.jaspreet.printserver.http.HttpHead
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.IOException
+import java.io.OutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -18,6 +20,7 @@ class IppRelayServer(
     private val port: Int,
     private val pool: ChannelPool,
     private val monitor: ActivityMonitor = ActivityMonitor.NONE,
+    private val leaseTimeoutMs: Long = 60_000,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
     private val executor = Executors.newCachedThreadPool()
@@ -44,13 +47,20 @@ class IppRelayServer(
                 // Parse the head BEFORE leasing, so an idle keep-alive
                 // connection never pins a printer channel.
                 val head = try { HttpHead.parse(cin) ?: break } catch (_: SocketTimeoutException) { break } catch (_: IOException) { break }
-                val channel = pool.lease()
+                val channel = try {
+                    pool.lease(leaseTimeoutMs)
+                } catch (e: Exception) {
+                    Log.w(TAG, "no free printer channel available, rejecting request", e)
+                    writeServiceUnavailable(cout)
+                    break
+                }
                 monitor.begin()
                 try {
                     HttpRelay.forward(head, cin, cout, channel)
                     pool.release(channel)
                 } catch (e: Exception) {
                     // Channel state unknown mid-transaction: never reuse it.
+                    Log.w(TAG, "discarding channel after transaction failure", e)
                     pool.discard(channel)
                     break
                 } finally {
@@ -61,8 +71,21 @@ class IppRelayServer(
         }
     }
 
+    private fun writeServiceUnavailable(cout: OutputStream) {
+        try {
+            cout.write("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+            cout.flush()
+        } catch (_: IOException) {
+            // Client already gone; nothing more we can do.
+        }
+    }
+
     fun stop() {
         try { serverSocket?.close() } catch (_: IOException) {}
         executor.shutdownNow()
+    }
+
+    private companion object {
+        const val TAG = "IppRelayServer"
     }
 }
