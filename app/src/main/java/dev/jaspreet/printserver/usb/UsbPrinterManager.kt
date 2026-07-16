@@ -28,10 +28,18 @@ class UsbPrinterManager(private val context: Context) {
     }
 
     /** Opens every IPP-USB interface on the device as an exclusive channel. Empty list = not IPP-USB. */
-    fun openIppTransports(device: UsbDevice): List<UsbTransport> =
-        device.interfaces()
-            .filter { IppUsb.isIppUsb(it.interfaceClass, it.interfaceSubclass, it.interfaceProtocol) }
-            .mapNotNull { openInterface(device, it) }
+    fun openIppTransports(device: UsbDevice): List<UsbTransport> {
+        val opened = mutableListOf<UsbTransport>()
+        try {
+            device.interfaces()
+                .filter { IppUsb.isIppUsb(it.interfaceClass, it.interfaceSubclass, it.interfaceProtocol) }
+                .forEach { iface -> openInterface(device, iface)?.let { opened += it } }
+            return opened
+        } catch (e: Exception) {
+            opened.forEach { try { it.close() } catch (_: Exception) {} }
+            throw e
+        }
+    }
 
     /** Opens the first classic printer-class interface (for the raw 9100 path). */
     fun openLegacyTransport(device: UsbDevice): UsbTransport? =

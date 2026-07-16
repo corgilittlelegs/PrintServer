@@ -18,7 +18,7 @@ class AndroidUsbTransport(
         while (left > 0) {
             val chunk = minOf(left, 16384)
             val n = connection.bulkTransfer(outEndpoint, data, off, chunk, WRITE_TIMEOUT_MS)
-            if (n < 0) throw IOException("USB bulk write failed at offset $off")
+            if (n <= 0) throw IOException("USB bulk write failed at offset $off")
             off += n
             left -= n
         }
@@ -32,6 +32,7 @@ class AndroidUsbTransport(
 
     override fun close() {
         try { connection.releaseInterface(iface) } catch (_: Exception) {}
+        try { connection.close() } catch (_: Exception) {}
     }
 
     private companion object {
