@@ -8,7 +8,9 @@ import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import dev.jaspreet.printserver.service.ServerService
 import dev.jaspreet.printserver.service.ServerState
 import kotlinx.coroutines.launch
@@ -40,14 +42,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         lifecycleScope.launch {
-            ServerState.status.collect { s ->
-                printerText.text = s.printerName ?: getString(R.string.status_idle)
-                statusText.text = s.message
-                addressText.text = if (s.running && s.ip != null) "http://${s.ip}:${s.port}" else ""
-                legacyBanner.visibility =
-                    if (s.running && !s.ippSupported) View.VISIBLE else View.GONE
-                toggleButton.text =
-                    getString(if (s.running) R.string.stop_server else R.string.start_server)
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                ServerState.status.collect { s ->
+                    printerText.text = s.printerName ?: getString(R.string.status_idle)
+                    statusText.text = s.message
+                    addressText.text = if (s.running && s.ip != null) "http://${s.ip}:${s.port}" else ""
+                    legacyBanner.visibility =
+                        if (s.running && !s.ippSupported) View.VISIBLE else View.GONE
+                    toggleButton.text =
+                        getString(if (s.running) R.string.stop_server else R.string.start_server)
+                }
             }
         }
 
