@@ -34,3 +34,34 @@ Install: `./gradlew :app:installDebug`.
 - [ ] UI shows the "no driverless support" banner.
 - [ ] From a PC with the vendor driver installed, add a raw TCP/IP printer at
       `<phone-ip>:9100` and print a page.
+
+## Tier-2: host-based printer, on-device rendering (HP DeskJet 2338)
+
+Prereq: 2338 connected via OTG, server running, NO legacy banner shown
+(this family is fully supported now).
+
+Run the `ipptool`/`lp` probes first — they catch missing/wrong IPP attributes
+in minutes, before burning paper on a print that was never going to render
+correctly:
+
+- [ ] `ipptool -tv ipp://<phone-ip>:8631/ipp/print get-printer-attributes.test` passes
+      with no missing/unexpected-attribute warnings (ipptool ships with CUPS).
+- [ ] `ipptool -tv ipp://<phone-ip>:8631/ipp/print print-job.test` (or a
+      hand-rolled `.test` file posting a real PDF) reports job-id and
+      job-state as expected.
+- [ ] `lp -h <phone-ip>:8631 -d ipp/print page.pdf` from a Linux/macOS shell
+      completes without CUPS falling back to a generic/raw queue.
+
+Then the physical print checks:
+
+- [ ] macOS discovers the printer via Bonjour and prints one text PDF page —
+      output physically correct (no garbage, no offset, right colors).
+- [ ] Windows 11 adds it driverlessly and prints a page.
+- [ ] iPhone AirPrint prints a photo (color fidelity check).
+- [ ] Multi-page PDF (3+ pages) prints all pages in order.
+- [ ] Submit two jobs back-to-back from different machines: both print, in order.
+- [ ] Corrupt PDF (truncate a real one) → job aborts, printer does not hang,
+      NEXT job still prints fine.
+- [ ] Cancel a queued (not yet printing) job from the client — it never prints;
+      canceling an already-processing job gets a clear rejection, not a hang.
+- [ ] Raw 9100 path still works from a PC with the HP driver installed.
