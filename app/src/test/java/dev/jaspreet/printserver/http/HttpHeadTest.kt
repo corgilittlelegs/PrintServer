@@ -2,8 +2,10 @@ package dev.jaspreet.printserver.http
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import java.io.IOException
 
 class HttpHeadTest {
 
@@ -36,5 +38,31 @@ class HttpHeadTest {
         val original = "POST /ipp/print HTTP/1.1\r\nHost: x\r\nContent-Type: application/ipp\r\n\r\n"
         val head = HttpHead.parse(stream(original))!!
         assertEquals(original, String(head.serialize(), Charsets.ISO_8859_1))
+    }
+
+    @Test
+    fun `throws on line exceeding max length`() {
+        val tooLong = "GET /" + "a".repeat(9000) + " HTTP/1.1\r\nHost: x\r\n\r\n"
+        assertThrows(IOException::class.java) {
+            HttpHead.parse(stream(tooLong))
+        }
+    }
+
+    @Test
+    fun `throws on too many headers`() {
+        val sb = StringBuilder("GET / HTTP/1.1\r\n")
+        repeat(101) { sb.append("X-Header-$it: v\r\n") }
+        sb.append("\r\n")
+        assertThrows(IOException::class.java) {
+            HttpHead.parse(stream(sb.toString()))
+        }
+    }
+
+    @Test
+    fun `set rejects value containing CRLF`() {
+        val head = HttpHead.parse(stream("GET / HTTP/1.1\r\nHost: x\r\n\r\n"))!!
+        assertThrows(IllegalArgumentException::class.java) {
+            head.set("Host", "evil\r\nX-Injected: yes")
+        }
     }
 }

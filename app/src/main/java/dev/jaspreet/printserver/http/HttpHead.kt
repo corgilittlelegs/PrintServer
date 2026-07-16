@@ -11,6 +11,8 @@ class HttpHead(val startLine: String, headers: List<Pair<String, String>>) {
         headers.firstOrNull { it.first.equals(name, ignoreCase = true) }?.second
 
     fun set(name: String, value: String) {
+        require(!name.contains('\r') && !name.contains('\n')) { "Header name contains CR/LF: $name" }
+        require(!value.contains('\r') && !value.contains('\n')) { "Header value contains CR/LF: $value" }
         headers.removeAll { it.first.equals(name, ignoreCase = true) }
         headers.add(name to value)
     }
@@ -22,11 +24,18 @@ class HttpHead(val startLine: String, headers: List<Pair<String, String>>) {
     }.toByteArray(Charsets.ISO_8859_1)
 
     companion object {
+        /** Maximum bytes allowed in a single start-line or header line before parsing fails. */
+        private const val MAX_LINE_LENGTH = 8192
+
+        /** Maximum number of headers accepted before a blank line. */
+        private const val MAX_HEADER_COUNT = 100
+
         /** Returns null if the stream is at EOF before any byte of the start line. */
         fun parse(input: InputStream): HttpHead? {
             val start = readLine(input) ?: return null
             val list = mutableListOf<Pair<String, String>>()
             while (true) {
+                if (list.size >= MAX_HEADER_COUNT) throw IOException("Too many headers (max $MAX_HEADER_COUNT)")
                 val line = readLine(input) ?: throw IOException("EOF inside HTTP headers")
                 if (line.isEmpty()) break
                 val idx = line.indexOf(':')
@@ -43,7 +52,10 @@ class HttpHead(val startLine: String, headers: List<Pair<String, String>>) {
                 val c = input.read()
                 if (c == -1) return if (sb.isEmpty()) null else sb.toString()
                 if (c == '\n'.code) return sb.toString()
-                if (c != '\r'.code) sb.append(c.toChar())
+                if (c != '\r'.code) {
+                    if (sb.length >= MAX_LINE_LENGTH) throw IOException("Line exceeds max length ($MAX_LINE_LENGTH)")
+                    sb.append(c.toChar())
+                }
             }
         }
     }
