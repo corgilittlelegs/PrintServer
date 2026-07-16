@@ -9,11 +9,13 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.IntentCompat
 import dev.jaspreet.printserver.MainActivity
 import dev.jaspreet.printserver.R
 import dev.jaspreet.printserver.discovery.DiscoveryAdvertiser
@@ -38,13 +40,21 @@ class ServerService : Service() {
     private var advertiser: DiscoveryAdvertiser? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val pipelineActive = AtomicBoolean(false)
+    @Volatile private var servedDeviceId: Int? = null
 
     private val detachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == UsbManager.ACTION_USB_DEVICE_DETACHED) {
-                update { it.copy(running = false, message = "Printer disconnected") }
-                stopSelf()
+            if (intent.action != UsbManager.ACTION_USB_DEVICE_DETACHED) return
+            val detached = IntentCompat.getParcelableExtra(
+                intent, UsbManager.EXTRA_DEVICE, UsbDevice::class.java,
+            )
+            val served = servedDeviceId
+            if (served != null && detached != null && detached.deviceId != served) {
+                // Some other peripheral on the same hub detached — the served printer is still connected.
+                return
             }
+            update { it.copy(running = false, message = "Printer disconnected") }
+            stopSelf()
         }
     }
 
@@ -78,6 +88,7 @@ class ServerService : Service() {
             val bindAddr = WifiAddress.get(this)
                 ?: return fail("Wi-Fi is not connected")
             val name = device.productName ?: "USB Printer"
+            servedDeviceId = device.deviceId
 
             val ippTransports = usb.openIppTransports(device)
             if (ippTransports.isNotEmpty()) {
@@ -150,6 +161,7 @@ class ServerService : Service() {
         rawRelay?.stop(); rawRelay = null
         legacyTransport?.close(); legacyTransport = null
         pool?.closeAll(); pool = null
+        servedDeviceId = null
         pipelineActive.set(false)
     }
 
