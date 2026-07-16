@@ -20,14 +20,20 @@ import dev.jaspreet.printserver.MainActivity
 import dev.jaspreet.printserver.R
 import dev.jaspreet.printserver.discovery.DiscoveryAdvertiser
 import dev.jaspreet.printserver.discovery.NsdAdvertiser
+import dev.jaspreet.printserver.ipp.LocalIppServer
+import dev.jaspreet.printserver.ipp.PrinterCapabilities
 import dev.jaspreet.printserver.ipp.PrinterQuery
 import dev.jaspreet.printserver.ipp.TxtRecords
+import dev.jaspreet.printserver.jobs.JobQueue
 import dev.jaspreet.printserver.relay.ActivityMonitor
 import dev.jaspreet.printserver.relay.ChannelPool
 import dev.jaspreet.printserver.relay.IppRelayServer
 import dev.jaspreet.printserver.relay.Raw9100Relay
+import dev.jaspreet.printserver.render.NativeRenderingPipeline
+import dev.jaspreet.printserver.render.PpdAsset
 import dev.jaspreet.printserver.usb.UsbPrinterManager
 import dev.jaspreet.printserver.usb.UsbTransport
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -39,6 +45,8 @@ class ServerService : Service() {
     private var legacyTransport: UsbTransport? = null
     private var advertiser: DiscoveryAdvertiser? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var jobQueue: JobQueue? = null
+    private var localIppServer: LocalIppServer? = null
     private val pipelineActive = AtomicBoolean(false)
     @Volatile private var servedDeviceId: Int? = null
 
@@ -138,15 +146,34 @@ class ServerService : Service() {
         val transport = usb.openLegacyTransport(device)
             ?: return fail("Printer has no usable USB interface")
         legacyTransport = transport
+
+        // Tier-2: the app itself is the IPP printer; rendering happens on-device.
+        val ppd = PpdAsset.extract(this)
+        val pipeline = NativeRenderingPipeline(cacheDir, ppd.absolutePath)
+        val spoolDir = File(cacheDir, "spool")
+        JobQueue.cleanStaleSpool(spoolDir.apply { mkdirs() }) // drop leftovers from a run killed mid-job
+        val queue = JobQueue(pipeline, { transport }).also { jobQueue = it }
+        val caps = PrinterCapabilities.deskJet2300(
+            java.net.URI.create("ipp://${bindAddr.hostAddress}:$IPP_PORT/ipp/print")
+        )
+        val ipp = LocalIppServer(IPP_PORT, caps, queue, spoolDir)
+            .also { localIppServer = it }
+        ipp.start(bindAddr)
+
+        // Raw 9100 stays available for PC-driver clients.
         val relay = Raw9100Relay(RAW_PORT) { transport }.also { rawRelay = it }
         relay.start(bindAddr)
-        advertiser = NsdAdvertiser(this).also { it.advertiseRaw(name, RAW_PORT) }
-        update {
-            it.copy(running = true, printerName = name, ippSupported = false,
-                ip = bindAddr.hostAddress, port = RAW_PORT,
-                message = "$name lacks IPP-USB. Driverless printing unavailable; raw port 9100 active for clients with the vendor driver.")
+
+        advertiser = NsdAdvertiser(this).also {
+            it.advertiseIpp(caps.makeAndModel, IPP_PORT, TxtRecords.forIpp(caps.toPrinterInfo()))
+            it.advertiseRaw(name, RAW_PORT)
         }
-        notify("$name on raw port $RAW_PORT (no driverless support)")
+        update {
+            it.copy(running = true, printerName = caps.makeAndModel, ippSupported = true,
+                ip = bindAddr.hostAddress, port = IPP_PORT,
+                message = "Serving ${caps.makeAndModel} (on-device rendering)")
+        }
+        notify("Serving ${caps.makeAndModel} at ${bindAddr.hostAddress}:$IPP_PORT")
     }
 
     private fun fail(message: String) {
@@ -158,6 +185,8 @@ class ServerService : Service() {
     private fun stopPipeline() {
         advertiser?.stopAll(); advertiser = null
         ippServer?.stop(); ippServer = null
+        localIppServer?.stop(); localIppServer = null
+        jobQueue?.shutdown(); jobQueue = null
         rawRelay?.stop(); rawRelay = null
         legacyTransport?.close(); legacyTransport = null
         pool?.closeAll(); pool = null
