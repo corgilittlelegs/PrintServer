@@ -51,4 +51,11 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
         android:text="@string/battery_exemption" />
+
+    <Button
+        android:id="@+id/licensesButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/licenses_button" />
 </LinearLayout>

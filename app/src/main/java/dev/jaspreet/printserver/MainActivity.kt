@@ -27,6 +27,7 @@ class MainActivity : AppCompatActivity() {
         val legacyBanner = findViewById<TextView>(R.id.legacyBanner)
         val toggleButton = findViewById<Button>(R.id.toggleButton)
         val batteryButton = findViewById<Button>(R.id.batteryButton)
+        val licensesButton = findViewById<Button>(R.id.licensesButton)
 
         toggleButton.setOnClickListener {
             val running = ServerState.status.value.running
@@ -39,6 +40,15 @@ class MainActivity : AppCompatActivity() {
                 Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
                     .setData(Uri.parse("package:$packageName"))
             )
+        }
+
+        licensesButton.setOnClickListener {
+            val notice = assets.open("licenses/NOTICE.md").bufferedReader().readText()
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(R.string.licenses_button)
+                .setMessage(notice)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
         }
 
         lifecycleScope.launch {
