@@ -59,6 +59,15 @@ class HttpHeadTest {
     }
 
     @Test
+    fun `parses successfully with exactly 100 headers`() {
+        val sb = StringBuilder("GET / HTTP/1.1\r\n")
+        repeat(100) { sb.append("X-Header-$it: v\r\n") }
+        sb.append("\r\n")
+        val head = HttpHead.parse(stream(sb.toString()))!!
+        assertEquals("v", head.get("X-Header-99"))
+    }
+
+    @Test
     fun `set rejects value containing CRLF`() {
         val head = HttpHead.parse(stream("GET / HTTP/1.1\r\nHost: x\r\n\r\n"))!!
         assertThrows(IllegalArgumentException::class.java) {

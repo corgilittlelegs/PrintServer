@@ -35,9 +35,9 @@ class HttpHead(val startLine: String, headers: List<Pair<String, String>>) {
             val start = readLine(input) ?: return null
             val list = mutableListOf<Pair<String, String>>()
             while (true) {
-                if (list.size >= MAX_HEADER_COUNT) throw IOException("Too many headers (max $MAX_HEADER_COUNT)")
                 val line = readLine(input) ?: throw IOException("EOF inside HTTP headers")
                 if (line.isEmpty()) break
+                if (list.size >= MAX_HEADER_COUNT) throw IOException("Too many headers (max $MAX_HEADER_COUNT)")
                 val idx = line.indexOf(':')
                 if (idx <= 0) throw IOException("Malformed header: $line")
                 list += line.substring(0, idx).trim() to line.substring(idx + 1).trim()
