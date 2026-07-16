@@ -1,0 +1,51 @@
+--- ../../../../native/downloads/hplip-3.24.4/prnt/hpcups/EncapsulatorFactory.cpp	2024-05-22 10:03:43
++++ hpcups/EncapsulatorFactory.cpp	2026-07-16 22:59:30
+@@ -31,7 +31,6 @@
+ #include "CommonDefinitions.h"
+ #include "EncapsulatorFactory.h"
+ #include "Encapsulator.h"
+-#include "Hbpl1.h"
+ #include "Pcl3.h"
+ #include "Pcl3Gui.h"
+ #include "Pcl3Gui2.h"
+@@ -40,8 +39,6 @@
+ #include "LJFastRaster.h"
+ #include "LJZjStream.h"
+ #include "LJZxStream.h"
+-#include "QuickConnect.h"
+-#include "LJJetReady.h"
+ #include "Lidil.h"
+ #include <string.h>
+ 
+@@ -51,10 +48,9 @@
+         return NULL;
+     }
+ 
+-    if (!strcmp (encap_tech, "hbpl1"))
+-    {
+-        return new Hbpl1();
+-    }
++    // hbpl1 intentionally unsupported: needs PCLmGenerator, which needs
++    // jpeglib.h — not part of this Android cross-build, and this printer
++    // family (DeskJet, pcl3gui) never selects hbpl1 anyway.
+ 
+     if (!strcmp (encap_tech, "pcl3"))
+     {
+@@ -88,14 +84,9 @@
+     {
+         return new LJZxStream();
+     }
+-    if (!strcmp (encap_tech, "quickconnect"))
+-    {
+-        return new QuickConnect();
+-    }
+-    if (!strcmp (encap_tech, "ljjetready"))
+-    {
+-        return new LJJetReady();
+-    }
++    // quickconnect/ljjetready (JPEG-based LaserJet modes) intentionally
++    // unsupported: this build targets PCL3-GUI (DeskJet) only, and those
++    // modes need jpeglib.h which isn't part of this Android cross-build.
+     if (!strcmp (encap_tech, "lidil"))
+     {
+         return new Lidil();

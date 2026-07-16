@@ -1,0 +1,19 @@
+--- /tmp/SystemServices.cpp.orig	2026-07-16 22:50:54
++++ hpcups/SystemServices.cpp	2026-07-16 22:51:27
+@@ -31,6 +31,7 @@
+ #include "CommonDefinitions.h"
+ #include "SystemServices.h"
+ #include "utils.h"
++#include "../hpcups_glue.h"
+ 
+ SystemServices::SystemServices(int iLogLevel, int job_id, char* user_name) : m_iLogLevel(iLogLevel)
+ {
+@@ -64,7 +65,7 @@
+ 
+     if ( !(m_iLogLevel & DONT_SEND_TO_BACKEND) )
+     {
+-        write (STDOUT_FILENO, pData, iLength);
++        write (g_hpcups_output_fd, pData, iLength);
+     }
+ 
+     return NO_ERROR;

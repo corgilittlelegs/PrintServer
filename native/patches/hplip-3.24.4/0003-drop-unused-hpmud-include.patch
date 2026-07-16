@@ -1,0 +1,10 @@
+--- ../../../../native/downloads/hplip-3.24.4/prnt/hpcups/dbuscomm.h	2024-05-22 10:03:43
++++ hpcups/dbuscomm.h	2026-07-16 22:54:54
+@@ -33,7 +33,6 @@
+ 
+ # include <string>
+ #include "CommonDefinitions.h"
+-#include "hpmud.h"
+ #include <pwd.h>
+ 
+ #ifdef HAVE_DBUS
