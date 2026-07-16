@@ -48,8 +48,8 @@ class ServerService : Service() {
             val detached = IntentCompat.getParcelableExtra(
                 intent, UsbManager.EXTRA_DEVICE, UsbDevice::class.java,
             )
-            val served = servedDeviceId
-            if (served != null && detached != null && detached.deviceId != served) {
+            val served = servedDeviceId ?: return // no printer being served yet — ignore all detaches
+            if (detached != null && detached.deviceId != served) {
                 // Some other peripheral on the same hub detached — the served printer is still connected.
                 return
             }
