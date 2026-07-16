@@ -7,7 +7,7 @@ import android.util.Log
 
 class NsdAdvertiser(context: Context) : DiscoveryAdvertiser {
     private val nsd = context.getSystemService(Context.NSD_SERVICE) as NsdManager
-    private val registrations = mutableListOf<NsdManager.RegistrationListener>()
+    private val registrations = java.util.concurrent.CopyOnWriteArrayList<NsdManager.RegistrationListener>()
 
     override fun advertiseIpp(name: String, port: Int, txt: Map<String, String>) {
         val info = NsdServiceInfo().apply {
