@@ -1,9 +1,11 @@
 package dev.jaspreet.printserver.http
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 
 class BodyCopierTest {
 
@@ -38,5 +40,33 @@ class BodyCopierTest {
         val (copied, remaining) = copy(head("Transfer-Encoding" to "chunked"), chunked)
         assertEquals(chunked, copied)
         assertEquals("LEFTOVER", remaining)
+    }
+
+    @Test
+    fun `malformed content-length throws`() {
+        assertThrows(IOException::class.java) {
+            copy(head("Content-Length" to "abc"), "hello")
+        }
+    }
+
+    @Test
+    fun `negative content-length throws`() {
+        assertThrows(IOException::class.java) {
+            copy(head("Content-Length" to "-5"), "hello")
+        }
+    }
+
+    @Test
+    fun `content-length and transfer-encoding both present throws`() {
+        assertThrows(IOException::class.java) {
+            copy(head("Content-Length" to "5", "Transfer-Encoding" to "chunked"), "helloLEFTOVER")
+        }
+    }
+
+    @Test
+    fun `duplicate content-length with differing values throws`() {
+        assertThrows(IOException::class.java) {
+            copy(head("Content-Length" to "5", "Content-Length" to "10"), "hello")
+        }
     }
 }

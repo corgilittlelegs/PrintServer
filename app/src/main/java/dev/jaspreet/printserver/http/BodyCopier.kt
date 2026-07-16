@@ -15,11 +15,23 @@ object BodyCopier {
 
     fun copy(head: HttpHead, from: InputStream, to: OutputStream) {
         val te = head.get("Transfer-Encoding")
+        val clValues = head.getAll("Content-Length")
+
+        if (clValues.isNotEmpty() && clValues.toSet().size > 1) {
+            throw IOException("Duplicate Content-Length headers with differing values: $clValues")
+        }
+        if (te != null && clValues.isNotEmpty()) {
+            throw IOException("Message has both Content-Length and Transfer-Encoding headers")
+        }
         if (te != null && te.contains("chunked", ignoreCase = true)) {
             copyChunked(from, to)
             return
         }
-        val length = head.get("Content-Length")?.trim()?.toLongOrNull() ?: 0L
+        if (clValues.isEmpty()) return
+        val length = clValues[0].trim().toLongOrNull()
+        if (length == null || length < 0) {
+            throw IOException("Malformed Content-Length: ${clValues[0]}")
+        }
         if (length > 0) copyExact(from, to, length)
     }
 

@@ -10,6 +10,10 @@ class HttpHead(val startLine: String, headers: List<Pair<String, String>>) {
     fun get(name: String): String? =
         headers.firstOrNull { it.first.equals(name, ignoreCase = true) }?.second
 
+    /** Returns all header values for [name] (case-insensitive), in order, for detecting duplicates. */
+    fun getAll(name: String): List<String> =
+        headers.filter { it.first.equals(name, ignoreCase = true) }.map { it.second }
+
     fun set(name: String, value: String) {
         require(!name.contains('\r') && !name.contains('\n')) { "Header name contains CR/LF: $name" }
         require(!value.contains('\r') && !value.contains('\n')) { "Header value contains CR/LF: $value" }
