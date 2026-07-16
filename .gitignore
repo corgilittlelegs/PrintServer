@@ -3,3 +3,6 @@ build/
 local.properties
 .idea/
 *.iml
+native/downloads/
+native/build/
+app/.cxx/
