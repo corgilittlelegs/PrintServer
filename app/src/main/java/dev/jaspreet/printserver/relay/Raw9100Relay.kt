@@ -17,6 +17,7 @@ class Raw9100Relay(
     private val transportProvider: () -> UsbTransport,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
+    @Volatile private var currentClient: Socket? = null
     private val executor = Executors.newSingleThreadExecutor()
 
     val actualPort: Int get() = serverSocket?.localPort ?: port
@@ -33,6 +34,7 @@ class Raw9100Relay(
     }
 
     private fun handle(client: Socket) {
+        currentClient = client
         client.soTimeout = 60_000
         val transport = transportProvider()
         val buf = ByteArray(65536)
@@ -45,11 +47,14 @@ class Raw9100Relay(
             }
         } catch (_: IOException) {
             // client gone or printer stalled; drop the connection
+        } finally {
+            currentClient = null
         }
     }
 
     fun stop() {
         try { serverSocket?.close() } catch (_: IOException) {}
+        try { currentClient?.close() } catch (_: IOException) {}
         executor.shutdownNow()
     }
 }
