@@ -10,6 +10,7 @@ import dev.jaspreet.printserver.relay.ChannelPool
 import dev.jaspreet.printserver.usb.FakePrinterTransport
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.net.URI
@@ -51,5 +52,35 @@ class PrinterQueryTest {
         val sent = String(printer.lastRequest(), Charsets.ISO_8859_1)
         assertTrue(sent.startsWith("POST /ipp/print HTTP/1.1\r\n"))
         assertTrue(sent.contains("Content-Type: application/ipp"))
+    }
+
+    private fun malformedIppResponseBytes(): ByteArray {
+        // Valid IPP framing, but no printer-attributes group at all — parse() must reject it.
+        val packet = IppPacket(
+            Status.successfulOk, 1,
+            groupOf(
+                Tag.operationAttributes,
+                Types.attributesCharset.of("utf-8"),
+                Types.attributesNaturalLanguage.of("en"),
+            ),
+        )
+        val ipp = ByteArrayOutputStream()
+        IppOutputStream(ipp).write(packet)
+        val body = ipp.toByteArray()
+        val head = "HTTP/1.1 200 OK\r\nContent-Type: application/ipp\r\nContent-Length: ${body.size}\r\n\r\n"
+        return head.toByteArray(Charsets.ISO_8859_1) + body
+    }
+
+    @Test
+    fun `discards rather than releases the channel when the response is malformed`() {
+        val printer = FakePrinterTransport { malformedIppResponseBytes() }
+        val pool = ChannelPool(listOf(printer))
+        try {
+            PrinterQuery.getAttributes(pool)
+            fail("Expected getAttributes to throw on a malformed IPP response")
+        } catch (_: Exception) {
+            // expected
+        }
+        assertTrue("Channel should have been discarded (closed), not released", printer.closed)
     }
 }

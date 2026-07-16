@@ -36,8 +36,10 @@ object PrinterQuery {
             val head = HttpHead.parse(input) ?: throw IOException("No response to attribute query")
             val body = ByteArrayOutputStream()
             BodyCopier.copy(head, input, body)
+            val packet = IppInputStream(ByteArrayInputStream(body.toByteArray())).readPacket()
+            val info = parse(packet)
             pool.release(channel)
-            return parse(IppInputStream(ByteArrayInputStream(body.toByteArray())).readPacket())
+            return info
         } catch (e: Exception) {
             pool.discard(channel)
             throw e
