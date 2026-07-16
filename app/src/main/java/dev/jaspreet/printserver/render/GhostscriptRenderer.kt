@@ -16,8 +16,15 @@ class GhostscriptRenderer(private val dpi: Int = 300) {
             )
         )
         if (code != 0) throw IOException("Ghostscript failed with code $code")
-        if (!outPpm.exists() || outPpm.length() == 0L) {
-            throw IOException("Ghostscript produced no output")
+        // gs expands a "%03d"-style pattern itself into one file per page, so
+        // outPpm never exists as a literal path in that case — check the
+        // directory instead. Single-file (non-pattern) callers keep the
+        // original exact-file check.
+        val producedSomething = if (outPpm.name.contains('%')) {
+            outPpm.parentFile?.listFiles { f -> f.name.endsWith(".ppm") }?.isNotEmpty() == true
+        } else {
+            outPpm.exists() && outPpm.length() > 0L
         }
+        if (!producedSomething) throw IOException("Ghostscript produced no output")
     }
 }
