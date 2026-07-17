@@ -7,9 +7,12 @@ import java.io.IOException
 class GhostscriptRenderer(private val dpi: Int = 300) {
 
     fun renderToPpm(pdf: File, outPpm: File) {
+        // No -dQUIET: gs's own diagnostics (missing device, malformed PDF, etc.)
+        // are what explain a gs_error_Fatal, and now route to logcat via
+        // gsapi_set_stdio in gsjni.c instead of the invisible real stdout/stderr.
         val code = GhostscriptNative.run(
             arrayOf(
-                "gs", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
+                "gs", "-dSAFER", "-dBATCH", "-dNOPAUSE",
                 "-sDEVICE=ppmraw", "-r$dpi",
                 "-o", outPpm.absolutePath,
                 pdf.absolutePath,

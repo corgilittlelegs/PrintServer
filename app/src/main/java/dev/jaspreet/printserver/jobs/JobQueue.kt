@@ -1,5 +1,6 @@
 package dev.jaspreet.printserver.jobs
 
+import android.util.Log
 import dev.jaspreet.printserver.render.RenderingPipeline
 import dev.jaspreet.printserver.usb.UsbTransport
 import java.io.File
@@ -63,6 +64,7 @@ class JobQueue(
             writeToUsb(rendered)
             job.state = JobState.COMPLETED
         } catch (e: Exception) {
+            Log.e(TAG, "Job ${job.id} (${job.name}) failed", e)
             job.state = JobState.ABORTED
             job.stateReason = "document-format-error"
         } finally {
@@ -100,6 +102,8 @@ class JobQueue(
     }
 
     companion object {
+        private const val TAG = "JobQueue"
+
         // A single 300dpi color A4 page is tens of MB uncompressed; leave headroom for multi-page jobs.
         private const val MIN_FREE_SPACE_BYTES = 200L * 1_000_000L
 
