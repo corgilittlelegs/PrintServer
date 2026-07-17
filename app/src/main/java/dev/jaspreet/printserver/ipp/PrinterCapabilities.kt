@@ -2,8 +2,17 @@ package dev.jaspreet.printserver.ipp
 
 import com.hp.jipp.encoding.AttributeGroup
 import com.hp.jipp.encoding.AttributeGroup.Companion.groupOf
+import com.hp.jipp.encoding.IntOrIntRange
+import com.hp.jipp.encoding.KeywordOrName
+import com.hp.jipp.encoding.Resolution
+import com.hp.jipp.encoding.ResolutionUnit
 import com.hp.jipp.encoding.Tag
+import com.hp.jipp.model.Finishing
+import com.hp.jipp.model.MediaCol
+import com.hp.jipp.model.MediaColDatabase
 import com.hp.jipp.model.Operation
+import com.hp.jipp.model.Orientation
+import com.hp.jipp.model.PrintQuality
 import com.hp.jipp.model.Types
 import java.net.URI
 import java.util.UUID
@@ -31,8 +40,9 @@ class PrinterCapabilities(
         Types.ippVersionsSupported.of("1.1", "2.0"),
         Types.operationsSupported.of(
             Operation.printJob.code, Operation.validateJob.code,
-            Operation.getPrinterAttributes.code, Operation.getJobAttributes.code,
-            Operation.cancelJob.code,
+            Operation.createJob.code, Operation.sendDocument.code, Operation.closeJob.code,
+            Operation.getPrinterAttributes.code, Operation.getJobAttributes.code, Operation.getJobs.code,
+            Operation.cancelJob.code, Operation.cancelMyJobs.code, Operation.identifyPrinter.code,
         ),
         Types.charsetConfigured.of("utf-8"),
         Types.charsetSupported.of("utf-8"),
@@ -45,6 +55,45 @@ class PrinterCapabilities(
         Types.mediaDefault.of("iso_a4_210x297mm"),
         Types.mediaSupported.of("iso_a4_210x297mm", "na_letter_8.5x11in"),
         Types.pdlOverrideSupported.of("attempted"),
+        // Below: mandatory IPP Everywhere attributes. Without ippFeaturesSupported
+        // advertising "ipp-everywhere" (plus the attributes IPP Everywhere requires
+        // alongside it), macOS's driverless "Auto Select" can't identify this as a
+        // driverless-capable printer and fails with "no driver found" even though
+        // the printer is otherwise fully reachable and functional over IPP.
+        Types.ippFeaturesSupported.of("ipp-everywhere"),
+        Types.mediaColDatabase.of(
+            MediaColDatabase(
+                mediaSizeName = KeywordOrName("iso_a4_210x297mm"),
+                mediaSize = MediaColDatabase.MediaSize(IntOrIntRange(21000), IntOrIntRange(29700)),
+            ),
+            MediaColDatabase(
+                mediaSizeName = KeywordOrName("na_letter_8.5x11in"),
+                mediaSize = MediaColDatabase.MediaSize(IntOrIntRange(21590), IntOrIntRange(27940)),
+            ),
+        ),
+        Types.mediaColDefault.of(
+            MediaCol(mediaSizeName = KeywordOrName("iso_a4_210x297mm"), mediaSize = MediaCol.MediaSize(21000, 29700)),
+        ),
+        Types.printColorModeSupported.of(if (color) listOf("color", "monochrome") else listOf("monochrome")),
+        Types.printColorModeDefault.of(if (color) "color" else "monochrome"),
+        Types.printerResolutionSupported.of(Resolution(300, 300, ResolutionUnit.dotsPerInch)),
+        Types.printerResolutionDefault.of(Resolution(300, 300, ResolutionUnit.dotsPerInch)),
+        Types.sidesSupported.of("one-sided"),
+        Types.sidesDefault.of("one-sided"),
+        Types.copiesDefault.of(1),
+        Types.copiesSupported.of(1..1),
+        Types.finishingsDefault.of(Finishing.none),
+        Types.finishingsSupported.of(Finishing.none),
+        Types.orientationRequestedDefault.of(Orientation.portrait),
+        Types.orientationRequestedSupported.of(Orientation.portrait),
+        Types.outputBinDefault.of(KeywordOrName("face-down")),
+        Types.outputBinSupported.of(KeywordOrName("face-down")),
+        Types.printQualityDefault.of(PrintQuality.normal),
+        Types.printQualitySupported.of(PrintQuality.normal),
+        Types.pagesPerMinute.of(8),
+        Types.printerInfo.of(makeAndModel),
+        Types.printerLocation.of(""),
+        Types.printerMoreInfo.of(printerUri),
     )
 
     fun toPrinterInfo(): PrinterInfo =
@@ -54,7 +103,7 @@ class PrinterCapabilities(
         fun deskJet2300(printerUri: URI, uuid: UUID = STABLE_UUID): PrinterCapabilities =
             PrinterCapabilities(
                 makeAndModel = "HP DeskJet 2300 series",
-                formats = listOf("application/pdf"),
+                formats = listOf("application/pdf", "image/jpeg"),
                 color = true,
                 printerUri = printerUri,
                 uuid = uuid,

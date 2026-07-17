@@ -61,7 +61,7 @@ class JobQueueTest {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
         val blockingPipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
-            override fun render(pdf: File, output: File) {
+            override fun render(document: File, output: File, format: String) {
                 started.countDown()
                 release.await(5, TimeUnit.SECONDS)
                 output.writeBytes("X".toByteArray())

@@ -32,14 +32,41 @@ class JobQueue(
         }
     }
 
-    fun submit(spoolFile: File, name: String): Int {
-        val job = PrintJob(nextId.getAndIncrement(), name, spoolFile)
+    fun submit(spoolFile: File, name: String, format: String = "application/pdf"): Int {
+        val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format)
         jobs[job.id] = job
         pending.put(job)
         return job.id
     }
 
+    /**
+     * Registers a job that isn't ready to run yet — for the IPP Create-Job / Send-Document
+     * two-phase flow, where the client reserves a job-id before the document bytes arrive
+     * in a later request. [spoolFile] must exist (even if empty); [enqueue] hands the job
+     * to the worker once its document has actually been written.
+     */
+    fun reserve(spoolFile: File, name: String, format: String = "application/pdf"): Int {
+        val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format)
+        jobs[job.id] = job
+        return job.id
+    }
+
+    /** Hands a job reserved via [reserve] to the worker now that its document is written. */
+    fun enqueue(id: Int): Boolean {
+        val job = jobs[id] ?: return false
+        synchronized(job) {
+            if (job.state != JobState.PENDING) return false
+            pending.put(job)
+            return true
+        }
+    }
+
     fun get(id: Int): PrintJob? = jobs[id]
+
+    /** Snapshot of jobs not yet completed/aborted/canceled — for IPP Get-Jobs. */
+    fun listActive(): List<PrintJob> = jobs.values.filter {
+        it.state == JobState.PENDING || it.state == JobState.PROCESSING
+    }
 
     /** True if the job was still pending and is now canceled. */
     fun cancel(id: Int): Boolean {
@@ -60,7 +87,7 @@ class JobQueue(
         val rendered = File(job.spoolFile.parentFile!!, "${job.spoolFile.name}.out")
         try {
             checkFreeSpace(job.spoolFile.parentFile)
-            pipeline.render(job.spoolFile, rendered)
+            pipeline.render(job.spoolFile, rendered, job.format)
             writeToUsb(rendered)
             job.state = JobState.COMPLETED
         } catch (e: Exception) {

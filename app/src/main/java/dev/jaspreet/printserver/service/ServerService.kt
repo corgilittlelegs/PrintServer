@@ -110,7 +110,7 @@ class ServerService : Service() {
             if (ippTransports.isNotEmpty()) {
                 startIppPipeline(name, ippTransports, bindAddr)
             } else {
-                startLegacyPipeline(name, usb, device, bindAddr)
+                startLegacyPipeline(usb, device, bindAddr)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Pipeline start failed", e)
@@ -146,7 +146,6 @@ class ServerService : Service() {
     }
 
     private fun startLegacyPipeline(
-        name: String,
         usb: UsbPrinterManager,
         device: android.hardware.usb.UsbDevice,
         bindAddr: java.net.Inet4Address,
@@ -173,8 +172,14 @@ class ServerService : Service() {
         relay.start(bindAddr)
 
         advertiser = NsdAdvertiser(this).also {
+            // Same name as the IPP advertisement below — mDNS clients (notably macOS's
+            // Add Printer picker) correlate multiple service types for one physical
+            // printer by instance name. A raw-9100 advertisement under a different name
+            // (e.g. the bare USB-reported product name, missing the "HP" the IPP one
+            // uses) shows up as an unrelated second printer in the picker and appears
+            // to confuse macOS's driverless "Auto Select" into failing entirely.
             it.advertiseIpp(caps.makeAndModel, IPP_PORT, TxtRecords.forIpp(caps.toPrinterInfo()))
-            it.advertiseRaw(name, RAW_PORT)
+            it.advertiseRaw(caps.makeAndModel, RAW_PORT)
         }
         update {
             it.copy(running = true, printerName = caps.makeAndModel, ippSupported = true,

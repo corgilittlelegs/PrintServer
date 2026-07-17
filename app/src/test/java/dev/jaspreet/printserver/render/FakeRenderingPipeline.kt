@@ -8,9 +8,11 @@ class FakeRenderingPipeline(
     private val failWith: IOException? = null,
 ) : RenderingPipeline {
     val rendered = mutableListOf<File>()
+    val formats = mutableListOf<String>()
 
-    override fun render(pdf: File, output: File) {
-        rendered += pdf
+    override fun render(document: File, output: File, format: String) {
+        rendered += document
+        formats += format
         failWith?.let { throw it }
         output.writeBytes(result)
     }

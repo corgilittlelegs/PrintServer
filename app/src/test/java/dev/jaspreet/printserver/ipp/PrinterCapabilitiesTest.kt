@@ -12,9 +12,9 @@ class PrinterCapabilitiesTest {
     private val caps = PrinterCapabilities.deskJet2300(URI.create("ipp://192.168.1.5:8631/ipp/print"))
 
     @Test
-    fun `advertises pdf as the only document format`() {
+    fun `advertises pdf as the default with jpeg also supported`() {
         val group = caps.asPrinterAttributes()
-        assertEquals(listOf("application/pdf"), group.getValues(Types.documentFormatSupported))
+        assertEquals(listOf("application/pdf", "image/jpeg"), group.getValues(Types.documentFormatSupported))
         assertEquals("application/pdf", group.getValue(Types.documentFormatDefault))
     }
 
@@ -30,9 +30,9 @@ class PrinterCapabilitiesTest {
     @Test
     fun `printer info feeds txt records`() {
         val info = caps.toPrinterInfo()
-        assertEquals(listOf("application/pdf"), info.formats)
+        assertEquals(listOf("application/pdf", "image/jpeg"), info.formats)
         assertTrue(info.color)
         val txt = TxtRecords.forIpp(info)
-        assertEquals("application/pdf", txt["pdl"])
+        assertEquals("application/pdf,image/jpeg", txt["pdl"])
     }
 }

@@ -24,7 +24,7 @@ class LegacyPipelineWiringSmokeTest {
         testCtx.assets.open("smoke.pdf").use { input -> pdf.outputStream().use { input.copyTo(it) } }
 
         try {
-            NativeRenderingPipeline(ctx.cacheDir, PpdAsset.extract(ctx).absolutePath).render(pdf, out)
+            NativeRenderingPipeline(ctx.cacheDir, PpdAsset.extract(ctx).absolutePath).render(pdf, out, "application/pdf")
             assertTrue("PCL output should be non-trivial", out.length() > 1024)
             assertEquals("PCL output should start with ESC", 0x1B, out.inputStream().use { it.read() })
         } catch (e: Throwable) {

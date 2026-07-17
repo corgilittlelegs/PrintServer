@@ -65,12 +65,12 @@ class LocalIppServerTest {
     )
 
     @Test
-    fun `answers get-printer-attributes with pdf support`() {
+    fun `answers get-printer-attributes with pdf and jpeg support`() {
         val port = start()
         val resp = ipp(port, IppPacket(Operation.getPrinterAttributes, 1, operationGroup()))
         assertEquals(Status.successfulOk, resp.status)
         val formats = resp[Tag.printerAttributes]!!.getValues(Types.documentFormatSupported)
-        assertEquals(listOf("application/pdf"), formats)
+        assertEquals(listOf("application/pdf", "image/jpeg"), formats)
     }
 
     @Test
@@ -125,7 +125,7 @@ class LocalIppServerTest {
         val firstStarted = java.util.concurrent.CountDownLatch(1)
         val release = java.util.concurrent.CountDownLatch(1)
         val blockOnFirst = object : dev.jaspreet.printserver.render.RenderingPipeline {
-            override fun render(pdf: File, output: File) {
+            override fun render(document: File, output: File, format: String) {
                 firstStarted.countDown()
                 release.await()
             }
