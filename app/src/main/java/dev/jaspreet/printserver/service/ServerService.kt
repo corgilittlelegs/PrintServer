@@ -64,7 +64,7 @@ class ServerService : Service() {
                 // Some other peripheral on the same hub detached — the served printer is still connected.
                 return
             }
-            update { it.copy(running = false, message = "Printer disconnected") }
+            update { ServerStatus(message = "Printer disconnected") }
             stopSelf()
         }
     }
@@ -134,7 +134,7 @@ class ServerService : Service() {
     ) {
         val channelPool = ChannelPool(transports).also { pool = it }
         channelPool.onAllChannelsDead = {
-            update { it.copy(running = false, message = "Printer stopped responding — replug it") }
+            update { ServerStatus(message = "Printer stopped responding — replug it") }
             stopSelf()
         }
         val info = PrinterQuery.getAttributes(channelPool)
@@ -178,7 +178,7 @@ class ServerService : Service() {
         val queue = JobQueue(
             pipeline, { transport },
             onPipelineStuck = {
-                update { it.copy(running = false, message = "Rendering got stuck — restart the app to recover") }
+                update { ServerStatus(message = "Rendering got stuck — restart the app to recover") }
                 stopSelf()
             },
         ).also { jobQueue = it }
@@ -218,7 +218,7 @@ class ServerService : Service() {
     }
 
     private fun fail(message: String) {
-        update { it.copy(running = false, message = message) }
+        update { ServerStatus(message = message) }
         notify(message)
         stopSelf()
     }
@@ -239,7 +239,7 @@ class ServerService : Service() {
         stopPipeline()
         runCatching { unregisterReceiver(detachReceiver) }
         while (wakeLock?.isHeld == true) wakeLock?.release()
-        update { it.copy(running = false) }
+        update { ServerStatus() }
         super.onDestroy()
     }
 
