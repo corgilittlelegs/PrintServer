@@ -13,6 +13,16 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+
+        ndk { abiFilters += "arm64-v8a" }   // phones only; emulator (x86_64) unsupported for native path
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     compileOptions {
@@ -35,4 +45,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.hp.jipp:jipp-core:0.7.16")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

@@ -6,4 +6,5 @@
     <string name="stop_server">Stop server</string>
     <string name="battery_exemption">Disable battery optimization</string>
     <string name="legacy_banner">This printer does not support IPP-USB, so driverless printing is unavailable. Raw port 9100 is active for computers that have the printer\'s driver installed.</string>
+    <string name="licenses_button">Third-party licenses</string>
 </resources>

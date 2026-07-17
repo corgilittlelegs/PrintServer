@@ -1,0 +1,13 @@
+--- /tmp/thread.c.orig	2026-07-16 23:04:16
++++ cupsraster/cups/thread.c	2026-07-16 23:04:21
+@@ -154,7 +154,9 @@
+ void
+ _cupsThreadCancel(_cups_thread_t thread)/* I - Thread ID */
+ {
+-  pthread_cancel(thread);
++  /* Bionic (Android's libc) has no pthread_cancel. Unused here — nothing in
++   * this build calls _cupsThreadCancel — so a no-op keeps this TU linking. */
++  (void)thread;
+ }
+ 
+ 
