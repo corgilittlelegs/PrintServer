@@ -6,3 +6,4 @@ local.properties
 native/downloads/
 native/build/
 app/.cxx/
+.superpowers/
