@@ -21,6 +21,10 @@ class HttpHead(val startLine: String, headers: List<Pair<String, String>>) {
         headers.add(name to value)
     }
 
+    fun remove(name: String) {
+        headers.removeAll { it.first.equals(name, ignoreCase = true) }
+    }
+
     fun serialize(): ByteArray = buildString {
         append(startLine).append("\r\n")
         headers.forEach { (n, v) -> append(n).append(": ").append(v).append("\r\n") }
