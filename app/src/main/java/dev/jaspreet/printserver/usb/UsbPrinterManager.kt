@@ -27,6 +27,38 @@ class UsbPrinterManager(private val context: Context) {
         usbManager.requestPermission(device, intent)
     }
 
+    /**
+     * Reads the printer's IEEE 1284 Device ID string via the USB Printer Class
+     * GET_DEVICE_ID control transfer. Returns null if the printer has no
+     * printer-class interface, the transfer fails, or it times out — callers
+     * should treat that the same as "no info available", not an error.
+     */
+    fun readDeviceId(device: UsbDevice): String? {
+        val iface = device.interfaces().firstOrNull { it.interfaceClass == IppUsb.CLASS_PRINTER }
+            ?: return null
+        val connection = usbManager.openDevice(device) ?: return null
+        return try {
+            val buf = ByteArray(1024)
+            val read = connection.controlTransfer(
+                0xA1, // USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_INTERFACE
+                0,    // GET_DEVICE_ID
+                0,    // wValue: configuration index
+                iface.id, // wIndex: interface number
+                buf, buf.size, 5000,
+            )
+            if (read < 2) return null
+            // First 2 bytes are a big-endian length prefix covering themselves + the string.
+            val declaredLen = ((buf[0].toInt() and 0xFF) shl 8) or (buf[1].toInt() and 0xFF)
+            val end = minOf(declaredLen, read)
+            if (end <= 2) return null
+            String(buf, 2, end - 2, Charsets.US_ASCII)
+        } catch (e: Exception) {
+            null
+        } finally {
+            connection.close()
+        }
+    }
+
     /** Opens every IPP-USB interface on the device as an exclusive channel. Empty list = not IPP-USB. */
     fun openIppTransports(device: UsbDevice): List<UsbTransport> {
         val opened = mutableListOf<UsbTransport>()
