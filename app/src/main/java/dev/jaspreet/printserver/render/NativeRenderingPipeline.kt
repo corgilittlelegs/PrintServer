@@ -19,11 +19,16 @@ class NativeRenderingPipeline(
     private val ghostscript = GhostscriptRenderer(dpi)
 
     override fun render(document: File, output: File, format: String) {
-        if (format == "image/jpeg") {
-            renderJpeg(document, output)
-        } else {
-            renderPdf(document, output)
+        when (format) {
+            "image/jpeg" -> renderJpeg(document, output)
+            "image/pwg-raster" -> renderPwgRaster(document, output)
+            else -> renderPdf(document, output)
         }
+    }
+
+    private fun renderPwgRaster(raster: File, output: File) {
+        val code = HpcupsNative.encodeRaster(raster.absolutePath, ppdPath, output.absolutePath)
+        if (code != 0) throw IOException("hpcups failed with code $code for PWG Raster")
     }
 
     private fun renderJpeg(jpeg: File, output: File) {

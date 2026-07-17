@@ -275,6 +275,7 @@ class LocalIppServer(
 
     private fun spoolExtension(format: String): String = when (format) {
         "image/jpeg" -> ".jpg"
+        "image/pwg-raster" -> ".pwg"
         else -> ".pdf"
     }
 

@@ -65,12 +65,12 @@ class LocalIppServerTest {
     )
 
     @Test
-    fun `answers get-printer-attributes with pdf and jpeg support`() {
+    fun `answers get-printer-attributes with driverless raster support`() {
         val port = start()
         val resp = ipp(port, IppPacket(Operation.getPrinterAttributes, 1, operationGroup()))
         assertEquals(Status.successfulOk, resp.status)
         val formats = resp[Tag.printerAttributes]!!.getValues(Types.documentFormatSupported)
-        assertEquals(listOf("application/pdf", "image/jpeg"), formats)
+        assertEquals(listOf("application/pdf", "image/pwg-raster", "image/jpeg"), formats)
     }
 
     @Test
@@ -85,6 +85,27 @@ class LocalIppServerTest {
         val jobId = resp[Tag.jobAttributes]!!.getValue(Types.jobId)
         assertNotNull(jobId)
         assertNotNull(queue!!.get(jobId!!))
+    }
+
+    @Test
+    fun `print-job preserves pwg raster document format for renderer`() {
+        val port = start()
+        val request = IppPacket(
+            Operation.printJob, 22,
+            groupOf(
+                Tag.operationAttributes,
+                Types.attributesCharset.of("utf-8"),
+                Types.attributesNaturalLanguage.of("en"),
+                Types.printerUri.of(URI.create("ipp://127.0.0.1/ipp/print")),
+                Types.documentFormat.of("image/pwg-raster"),
+            ),
+        )
+        val resp = ipp(port, request, "RaS2 fake raster".toByteArray())
+        assertEquals(Status.successfulOk, resp.status)
+        val jobId = resp[Tag.jobAttributes]!!.getValue(Types.jobId)!!
+        val job = queue!!.get(jobId)!!
+        assertEquals("image/pwg-raster", job.format)
+        assertEquals("pwg", job.spoolFile.extension)
     }
 
     @Test

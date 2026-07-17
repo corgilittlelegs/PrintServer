@@ -172,14 +172,14 @@ class ServerService : Service() {
         relay.start(bindAddr)
 
         advertiser = NsdAdvertiser(this).also {
-            // Same name as the IPP advertisement below — mDNS clients (notably macOS's
-            // Add Printer picker) correlate multiple service types for one physical
-            // printer by instance name. A raw-9100 advertisement under a different name
-            // (e.g. the bare USB-reported product name, missing the "HP" the IPP one
-            // uses) shows up as an unrelated second printer in the picker and appears
-            // to confuse macOS's driverless "Auto Select" into failing entirely.
+            // Raw 9100 (_pdl-datastream._tcp) is deliberately NOT advertised over mDNS
+            // here: a second Bonjour service type under the same instance name made
+            // macOS's Add Printer picker see two candidates for one printer and fall
+            // back to a generic, unclassified Bonjour entry instead of confidently
+            // resolving driverless/AirPrint support via the _ipp._tcp entry alone.
+            // The port-9100 socket itself (Raw9100Relay above) stays open for clients
+            // that already have a vendor driver and connect to it by IP directly.
             it.advertiseIpp(caps.makeAndModel, IPP_PORT, TxtRecords.forIpp(caps.toPrinterInfo()))
-            it.advertiseRaw(caps.makeAndModel, RAW_PORT)
         }
         update {
             it.copy(running = true, printerName = caps.makeAndModel, ippSupported = true,

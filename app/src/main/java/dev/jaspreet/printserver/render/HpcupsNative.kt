@@ -7,4 +7,7 @@ object HpcupsNative {
         rgb: ByteArray, width: Int, height: Int, dpi: Int,
         ppdPath: String, outPath: String,
     ): Int
+
+    /** Encodes a client-supplied PWG/CUPS raster file to printer-ready PCL3-GUI. */
+    external fun encodeRaster(inputPath: String, ppdPath: String, outPath: String): Int
 }

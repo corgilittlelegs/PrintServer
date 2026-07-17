@@ -97,13 +97,24 @@ class PrinterCapabilities(
     )
 
     fun toPrinterInfo(): PrinterInfo =
-        PrinterInfo(makeAndModel, formats, color, uuid.toString(), urf = emptyList())
+        PrinterInfo(makeAndModel, formats, color, uuid.toString(), urf = URF_TOKENS)
 
     companion object {
+        // PWG5100.13 URF tokens matching the resolution/color-mode/media attributes
+        // declared in asPrinterAttributes() above. macOS's mDNS browse stage badges a
+        // Bonjour _ipp._tcp service as AirPrint-capable using this TXT key alone, before
+        // it ever opens an IPP connection — omit it and the printer shows up as an
+        // unclassified generic Bonjour service instead.
+        private val URF_TOKENS = listOf("V1.4", "CP1", "PQ4", "RS300", "W8", "SRGB24")
+
         fun deskJet2300(printerUri: URI, uuid: UUID = STABLE_UUID): PrinterCapabilities =
             PrinterCapabilities(
-                makeAndModel = "HP DeskJet 2300 series",
-                formats = listOf("application/pdf", "image/jpeg"),
+                // Deliberately not the real HP model string: an authentic vendor
+                // model name in ty/printer-make-and-model can steer macOS's driver
+                // picker toward reconciling against Apple's bundled HP driver
+                // database instead of trusting the IPP-Everywhere self-declaration.
+                makeAndModel = "PrintServer Bridge",
+                formats = listOf("application/pdf", "image/pwg-raster", "image/jpeg"),
                 color = true,
                 printerUri = printerUri,
                 uuid = uuid,

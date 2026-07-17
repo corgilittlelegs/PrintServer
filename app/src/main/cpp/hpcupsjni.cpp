@@ -22,6 +22,16 @@ struct RasterFeed {
     unsigned width, height, dpi;
 };
 
+static int run_hpcups(int inputFd, int outputFd, const char *ppd) {
+    setenv("PPD", ppd, 1);
+    g_hpcups_input_fd = inputFd;
+    g_hpcups_output_fd = outputFd;
+
+    char *argv[] = { (char *)"hpcups", (char *)"1", (char *)"android",
+                     (char *)"printserver", (char *)"1", (char *)"", NULL };
+    return hpcups_main(6, argv);
+}
+
 /* Writer thread: emits one CUPS-Raster v2 page (sRGB, 8bpc chunky) into the pipe. */
 static void *feed_raster(void *arg) {
     RasterFeed *f = (RasterFeed *)arg;
@@ -78,18 +88,11 @@ Java_dev_jaspreet_printserver_render_HpcupsNative_encode(
     int pipefd[2];
     int outFd = open(outPath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (outFd >= 0 && pipe(pipefd) == 0) {
-        setenv("PPD", ppd, 1);
-        g_hpcups_input_fd = pipefd[0];
-        g_hpcups_output_fd = outFd;
-
         RasterFeed feed = { pipefd[1], (const unsigned char *)rgb,
                             (unsigned)width, (unsigned)height, (unsigned)dpi };
         pthread_t writer;
         pthread_create(&writer, NULL, feed_raster, &feed);
-
-        char *argv[] = { (char *)"hpcups", (char *)"1", (char *)"android",
-                         (char *)"printserver", (char *)"1", (char *)"", NULL };
-        result = hpcups_main(6, argv);
+        result = run_hpcups(pipefd[0], outFd, ppd);
 
         pthread_join(writer, NULL);
         close(pipefd[0]);
@@ -97,6 +100,38 @@ Java_dev_jaspreet_printserver_render_HpcupsNative_encode(
     if (outFd >= 0) close(outFd);
 
     env->ReleaseByteArrayElements(jrgb, rgb, JNI_ABORT);
+    env->ReleaseStringUTFChars(jppdPath, ppd);
+    env->ReleaseStringUTFChars(joutPath, outPath);
+    return result;
+}
+
+/*
+ * Encodes a client-supplied PWG/CUPS/Apple raster file to PCL3-GUI via hpcups.
+ * hpcups reads through CUPS' raster APIs, so CUPS_RASTER_READ handles the
+ * supported raster stream variants and page count internally.
+ */
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_jaspreet_printserver_render_HpcupsNative_encodeRaster(
+    JNIEnv *env, jobject thiz,
+    jstring jinputPath, jstring jppdPath, jstring joutPath) {
+
+    const char *inputPath = env->GetStringUTFChars(jinputPath, NULL);
+    const char *ppd = env->GetStringUTFChars(jppdPath, NULL);
+    const char *outPath = env->GetStringUTFChars(joutPath, NULL);
+    int result = -1;
+
+    int inputFd = open(inputPath, O_RDONLY);
+    int outFd = open(outPath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (inputFd >= 0 && outFd >= 0) {
+        result = run_hpcups(inputFd, outFd, ppd);
+    } else {
+        LOGE("open failed for raster input=%s output=%s", inputPath, outPath);
+    }
+
+    if (inputFd >= 0) close(inputFd);
+    if (outFd >= 0) close(outFd);
+
+    env->ReleaseStringUTFChars(jinputPath, inputPath);
     env->ReleaseStringUTFChars(jppdPath, ppd);
     env->ReleaseStringUTFChars(joutPath, outPath);
     return result;
