@@ -32,6 +32,8 @@ import dev.jaspreet.printserver.relay.IppRelayServer
 import dev.jaspreet.printserver.relay.Raw9100Relay
 import dev.jaspreet.printserver.render.NativeRenderingPipeline
 import dev.jaspreet.printserver.render.PpdAsset
+import dev.jaspreet.printserver.usb.DeviceId
+import dev.jaspreet.printserver.usb.DeviceIdInfo
 import dev.jaspreet.printserver.usb.UsbPrinterManager
 import dev.jaspreet.printserver.usb.UsbTransport
 import java.io.File
@@ -105,6 +107,7 @@ class ServerService : Service() {
                 usb.requestPermission(device)
                 return fail("Grant the USB permission dialog, then toggle the server on again")
             }
+            val deviceIdInfo = DeviceId.parse(usb.readDeviceId(device))
             val bindAddr = WifiAddress.get(this)
                 ?: return fail("Wi-Fi is not connected")
             val name = device.productName ?: "USB Printer"
@@ -112,9 +115,9 @@ class ServerService : Service() {
 
             val ippTransports = usb.openIppTransports(device)
             if (ippTransports.isNotEmpty()) {
-                startIppPipeline(name, ippTransports, bindAddr)
+                startIppPipeline(name, ippTransports, bindAddr, device, deviceIdInfo)
             } else {
-                startLegacyPipeline(usb, device, bindAddr)
+                startLegacyPipeline(usb, device, bindAddr, deviceIdInfo)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Pipeline start failed", e)
@@ -126,6 +129,8 @@ class ServerService : Service() {
         name: String,
         transports: List<UsbTransport>,
         bindAddr: java.net.Inet4Address,
+        device: android.hardware.usb.UsbDevice,
+        deviceIdInfo: DeviceIdInfo,
     ) {
         val channelPool = ChannelPool(transports).also { pool = it }
         channelPool.onAllChannelsDead = {
@@ -143,8 +148,14 @@ class ServerService : Service() {
             it.advertiseIpp(info.makeAndModel, IPP_PORT, TxtRecords.forIpp(info))
         }
         update {
-            it.copy(running = true, printerName = info.makeAndModel, ippSupported = true,
-                ip = bindAddr.hostAddress, port = IPP_PORT, message = "Serving ${info.makeAndModel}")
+            it.copy(
+                running = true, printerName = info.makeAndModel, ippSupported = true,
+                ip = bindAddr.hostAddress, port = IPP_PORT, message = "Serving ${info.makeAndModel}",
+                manufacturer = deviceIdInfo.manufacturer, model = deviceIdInfo.model,
+                serialNumber = device.serialNumber,
+                vidPid = "%04X:%04X".format(device.vendorId, device.productId),
+                pdls = deviceIdInfo.commands, tier = 1, connectedAt = System.currentTimeMillis(),
+            )
         }
         notify("Serving ${info.makeAndModel} at ${bindAddr.hostAddress}:$IPP_PORT")
     }
@@ -153,6 +164,7 @@ class ServerService : Service() {
         usb: UsbPrinterManager,
         device: android.hardware.usb.UsbDevice,
         bindAddr: java.net.Inet4Address,
+        deviceIdInfo: DeviceIdInfo,
     ) {
         val transport = usb.openLegacyTransport(device)
             ?: return fail("Printer has no usable USB interface")
@@ -192,9 +204,15 @@ class ServerService : Service() {
             it.advertiseIpp(caps.makeAndModel, IPP_PORT, TxtRecords.forIpp(caps.toPrinterInfo()))
         }
         update {
-            it.copy(running = true, printerName = caps.makeAndModel, ippSupported = true,
+            it.copy(
+                running = true, printerName = caps.makeAndModel, ippSupported = true,
                 ip = bindAddr.hostAddress, port = IPP_PORT,
-                message = "Serving ${caps.makeAndModel} (on-device rendering)")
+                message = "Serving ${caps.makeAndModel} (on-device rendering)",
+                manufacturer = deviceIdInfo.manufacturer, model = deviceIdInfo.model,
+                serialNumber = device.serialNumber,
+                vidPid = "%04X:%04X".format(device.vendorId, device.productId),
+                pdls = deviceIdInfo.commands, tier = 2, connectedAt = System.currentTimeMillis(),
+            )
         }
         notify("Serving ${caps.makeAndModel} at ${bindAddr.hostAddress}:$IPP_PORT")
     }
