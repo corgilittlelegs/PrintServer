@@ -1,6 +1,7 @@
 package dev.jaspreet.printserver.relay
 
 import dev.jaspreet.printserver.http.BodyCopier
+import dev.jaspreet.printserver.http.BodyReader
 import dev.jaspreet.printserver.http.HttpHead
 import dev.jaspreet.printserver.usb.UsbTransport
 import dev.jaspreet.printserver.usb.UsbTransportInputStream
@@ -12,6 +13,20 @@ import java.io.InputStream
 import java.io.OutputStream
 
 object HttpRelay {
+    /** Same cap as an incoming print document — a well-behaved IPP-USB printer's
+     *  response (status + attributes, no document body) is tiny; anything near
+     *  this size means a misbehaving printer, not a legitimate reply. */
+    private const val MAX_RESPONSE_BYTES = BodyReader.DEFAULT_MAX_BYTES
+
+    /** Bounded sink: throws once the printer's response exceeds [MAX_RESPONSE_BYTES],
+     *  instead of buffering an unbounded amount of memory. */
+    private class BoundedByteArrayOutputStream(private val limit: Long) : ByteArrayOutputStream() {
+        private var total = 0L
+        override fun write(b: Int) { total++; check(); super.write(b) }
+        override fun write(b: ByteArray, off: Int, len: Int) { total += len; check(); super.write(b, off, len) }
+        private fun check() { if (total > limit) throw IOException("Printer response exceeded $limit bytes") }
+    }
+
     /**
      * Forwards one already-parsed HTTP request ([head] + remaining body on
      * [clientIn]) over [usb] and streams the printer's response to [clientOut].
@@ -42,7 +57,7 @@ object HttpRelay {
         usbOut.flush()
 
         val respHead = HttpHead.parse(usbIn) ?: throw IOException("Printer closed channel without response")
-        val respBody = ByteArrayOutputStream()
+        val respBody = BoundedByteArrayOutputStream(MAX_RESPONSE_BYTES)
         BodyCopier.copy(respHead, usbIn, respBody)
 
         try {

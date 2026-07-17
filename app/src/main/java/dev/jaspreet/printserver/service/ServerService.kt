@@ -15,6 +15,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import dev.jaspreet.printserver.MainActivity
 import dev.jaspreet.printserver.R
@@ -73,7 +74,10 @@ class ServerService : Service() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "printserver:jobs")
             .apply { setReferenceCounted(true) }
-        registerReceiver(detachReceiver, IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED))
+        ContextCompat.registerReceiver(
+            this, detachReceiver, IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -159,7 +163,13 @@ class ServerService : Service() {
         val pipeline = NativeRenderingPipeline(cacheDir, ppd.absolutePath)
         val spoolDir = File(cacheDir, "spool")
         JobQueue.cleanStaleSpool(spoolDir.apply { mkdirs() }) // drop leftovers from a run killed mid-job
-        val queue = JobQueue(pipeline, { transport }).also { jobQueue = it }
+        val queue = JobQueue(
+            pipeline, { transport },
+            onPipelineStuck = {
+                update { it.copy(running = false, message = "Rendering got stuck — restart the app to recover") }
+                stopSelf()
+            },
+        ).also { jobQueue = it }
         val caps = PrinterCapabilities.deskJet2300(
             java.net.URI.create("ipp://${bindAddr.hostAddress}:$IPP_PORT/ipp/print")
         )

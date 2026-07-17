@@ -4,8 +4,12 @@ import android.util.Log
 import dev.jaspreet.printserver.render.RenderingPipeline
 import dev.jaspreet.printserver.usb.UsbTransport
 import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
@@ -17,17 +21,32 @@ import kotlin.concurrent.thread
 class JobQueue(
     private val pipeline: RenderingPipeline,
     private val transportProvider: () -> UsbTransport,
+    private val renderTimeoutMs: Long = 120_000,
+    /** Called at most once if a render hangs past [renderTimeoutMs]. The native
+     *  libraries aren't reentrant and can't be safely interrupted mid-call, so a
+     *  hung render leaks its thread and permanently poisons this queue — the
+     *  caller (ServerService) is expected to tear down and let the user restart. */
+    private val onPipelineStuck: () -> Unit = {},
     private val onJobFinished: (PrintJob) -> Unit = {},
 ) {
     private val nextId = AtomicInteger(1)
     private val jobs = ConcurrentHashMap<Int, PrintJob>()
     private val pending = LinkedBlockingQueue<PrintJob>()
     @Volatile private var running = true
+    @Volatile private var poisoned = false
+
+    // Dedicated so a timed-out render's thread (which we cannot safely interrupt or
+    // reuse — see onPipelineStuck) is isolated from the worker loop below.
+    private val renderExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
     private val worker = thread(name = "print-worker") {
         while (running) {
             val job = try { pending.take() } catch (_: InterruptedException) { break }
             if (job.state == JobState.CANCELED) continue
+            if (poisoned) {
+                failWithoutRendering(job, "queue-unavailable")
+                continue
+            }
             process(job)
         }
     }
@@ -87,7 +106,20 @@ class JobQueue(
         val rendered = File(job.spoolFile.parentFile!!, "${job.spoolFile.name}.out")
         try {
             checkFreeSpace(job.spoolFile.parentFile)
-            pipeline.render(job.spoolFile, rendered, job.format)
+            val future = renderExecutor.submit { pipeline.render(job.spoolFile, rendered, job.format) }
+            try {
+                future.get(renderTimeoutMs, TimeUnit.MILLISECONDS)
+            } catch (e: TimeoutException) {
+                // The render call is still running on renderExecutor's thread and can't be
+                // safely killed (native, non-reentrant globals) — poison the queue instead
+                // of risking a second render call running concurrently with this one.
+                Log.e(TAG, "Job ${job.id} (${job.name}) render exceeded ${renderTimeoutMs}ms — poisoning queue")
+                poisoned = true
+                job.state = JobState.ABORTED
+                job.stateReason = "render-timeout"
+                onPipelineStuck()
+                return
+            }
             writeToUsb(rendered)
             job.state = JobState.COMPLETED
         } catch (e: Exception) {
@@ -99,6 +131,16 @@ class JobQueue(
             rendered.delete()
             onJobFinished(job)
         }
+    }
+
+    private fun failWithoutRendering(job: PrintJob, reason: String) {
+        synchronized(job) {
+            if (job.state == JobState.CANCELED) return
+            job.state = JobState.ABORTED
+        }
+        job.stateReason = reason
+        job.spoolFile.delete()
+        onJobFinished(job)
     }
 
     /**
@@ -126,6 +168,7 @@ class JobQueue(
     fun shutdown() {
         running = false
         worker.interrupt()
+        renderExecutor.shutdownNow()
     }
 
     companion object {

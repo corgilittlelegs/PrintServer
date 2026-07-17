@@ -18,6 +18,12 @@ class NativeRenderingPipeline(
 
     private val ghostscript = GhostscriptRenderer(dpi)
 
+    companion object {
+        // Bounds a decoded JPEG's memory footprint (ARGB_8888 bitmap + RGB copies below);
+        // 50 megapixels is well beyond any realistic printed page at this pipeline's 300dpi.
+        private const val MAX_JPEG_PIXELS = 50_000_000L
+    }
+
     override fun render(document: File, output: File, format: String) {
         when (format) {
             "image/jpeg" -> renderJpeg(document, output)
@@ -32,6 +38,15 @@ class NativeRenderingPipeline(
     }
 
     private fun renderJpeg(jpeg: File, output: File) {
+        // Check the declared dimensions before decoding actual pixels — a tiny file can
+        // claim an enormous width/height (decompression bomb) and blow up memory on the
+        // full decode below. inJustDecodeBounds only parses the header, no pixel buffer.
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(jpeg.absolutePath, bounds)
+        val declaredPixels = bounds.outWidth.toLong() * bounds.outHeight.toLong()
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || declaredPixels > MAX_JPEG_PIXELS) {
+            throw IOException("JPEG dimensions ${bounds.outWidth}x${bounds.outHeight} exceed limit")
+        }
         val bitmap = BitmapFactory.decodeFile(jpeg.absolutePath)
             ?: throw IOException("Could not decode JPEG")
         try {

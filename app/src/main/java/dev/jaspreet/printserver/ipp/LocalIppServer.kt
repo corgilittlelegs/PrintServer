@@ -181,6 +181,13 @@ class LocalIppServer(
             ?: return errorResponse(request.requestId, Status.clientErrorBadRequest)
         val job = jobQueue.get(jobId)
             ?: return errorResponse(request.requestId, Status.clientErrorNotFound)
+        // Job must still be PENDING (reserved via Create-Job, not yet handed to the
+        // worker) — once it's PROCESSING/COMPLETED/etc its spool file is owned by the
+        // worker (and may already be deleted), so appending here would either race the
+        // worker or silently resurrect a deleted file with no size bound.
+        if (job.state != JobState.PENDING) {
+            return errorResponse(request.requestId, Status.clientErrorNotPossible)
+        }
         if (document.isNotEmpty()) job.spoolFile.appendBytes(document)
         // We don't support multi-document jobs, so treat every Send-Document as final
         // regardless of the client's stated intent — matches Print-Job's one-shot model.
