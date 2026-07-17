@@ -11,6 +11,13 @@ data class ServerStatus(
     val ip: String? = null,
     val port: Int? = null,
     val message: String = "Idle",
+    val manufacturer: String? = null,
+    val model: String? = null,
+    val serialNumber: String? = null,
+    val vidPid: String? = null,
+    val pdls: List<String> = emptyList(),
+    val tier: Int? = null,
+    val connectedAt: Long? = null,
 )
 
 object ServerState {
