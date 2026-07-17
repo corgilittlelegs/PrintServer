@@ -35,6 +35,21 @@ Install: `./gradlew :app:installDebug`.
 - [ ] From a PC with the vendor driver installed, add a raw TCP/IP printer at
       `<phone-ip>:9100` and print a page.
 
+## Printer info card (both tiers)
+
+- [ ] Connect a Tier 1 (IPP-USB) printer, start the server. Manufacturer,
+      model, serial, VID:PID, PDL list, "Tier 1", and connect time all show.
+- [ ] Connect a Tier 2 (host-based) printer, start the server. Same fields
+      show, with "Tier 2" and PDLs reflecting that printer's PCL/PJL support.
+- [ ] Manufacturer/model shown match the printer's actual make/model, not a
+      generic placeholder.
+- [ ] Stop the server. All printer-info rows disappear (no stale data left
+      showing after the printer is no longer being served).
+- [ ] If reachable, test a printer that doesn't respond to GET_DEVICE_ID (or
+      temporarily stub `readDeviceId` to return null): manufacturer/model/PDL
+      rows are hidden, not shown as blank or "Unknown" — app doesn't crash,
+      serial/VID:PID/tier/connect time still show normally.
+
 ## Tier-2: host-based printer, on-device rendering (HP DeskJet 2338)
 
 Prereq: 2338 connected via OTG, server running, NO legacy banner shown
