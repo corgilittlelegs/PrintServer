@@ -111,6 +111,7 @@ class LocalIppServer(
 
     private fun getPrinterAttributes(request: IppPacket): IppPacket {
         val full = capabilities.asPrinterAttributes()
+            .plus(listOf(Types.queuedJobCount.of(jobQueue.listActive().size)))
         val requested = request[Tag.operationAttributes]?.getValues(Types.requestedAttributes)
         val filtered = if (requested.isNullOrEmpty() || requested.contains("all")) {
             full

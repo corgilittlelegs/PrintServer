@@ -49,6 +49,15 @@ class PrinterCapabilitiesTest {
     }
 
     @Test
+    fun `reports the RFC 2911 mandatory printer attributes that IPP-Everywhere clients validate before trusting a driverless printer`() {
+        val group = caps.asPrinterAttributes()
+        assertEquals(listOf("none"), group.getValues(Types.uriAuthenticationSupported))
+        assertEquals(listOf("none"), group.getValues(Types.uriSecuritySupported))
+        assertEquals(false, group.getValue(Types.multipleDocumentJobsSupported))
+        assertTrue("printer-up-time must be a positive integer per RFC 2911", (group.getValue(Types.printerUpTime) ?: 0) >= 0)
+    }
+
+    @Test
     fun `advertised name is not a real vendor model string that could steer macOS toward a bundled driver`() {
         assertFalse(
             "makeAndModel should not be a genuine HP retail model name: ${caps.makeAndModel}",

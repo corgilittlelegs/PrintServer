@@ -28,9 +28,18 @@ class PrinterCapabilities(
     val printerUri: URI,
     val uuid: UUID,
 ) {
+    private val createdAtNanos = System.nanoTime()
+
     fun asPrinterAttributes(): AttributeGroup = groupOf(
         Tag.printerAttributes,
         Types.printerUriSupported.of(printerUri),
+        // RFC 2911 group-1 mandatory Printer attributes that IPP-Everywhere
+        // clients (macOS's driverless picker included) validate before they'll
+        // trust a printer enough to synthesize a driver for it.
+        Types.uriAuthenticationSupported.of("none"),
+        Types.uriSecuritySupported.of("none"),
+        Types.multipleDocumentJobsSupported.of(false),
+        Types.printerUpTime.of(((System.nanoTime() - createdAtNanos) / 1_000_000_000L).toInt()),
         Types.printerName.of(makeAndModel),
         Types.printerMakeAndModel.of(makeAndModel),
         Types.printerState.of(com.hp.jipp.model.PrinterState.idle),

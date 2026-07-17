@@ -12,7 +12,12 @@ class NsdAdvertiser(context: Context) : DiscoveryAdvertiser {
     override fun advertiseIpp(name: String, port: Int, txt: Map<String, String>) {
         val info = NsdServiceInfo().apply {
             serviceName = name
-            serviceType = "_ipp._tcp"
+            // The ",_universal" subtype is how macOS's Add Printer picker positively
+            // flags a Bonjour service as AirPrint-capable during discovery, before it
+            // ever reads TXT records or does an IPP round trip. Without it, Auto
+            // Select falls through to a generic (and here, doomed) driver-database
+            // lookup instead of trusting the IPP-Everywhere self-declaration.
+            serviceType = "_ipp._tcp,_universal"
             setPort(port)
             txt.forEach { (k, v) -> setAttribute(k, v) }
         }

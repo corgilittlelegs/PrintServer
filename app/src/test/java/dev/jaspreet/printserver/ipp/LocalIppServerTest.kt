@@ -190,6 +190,26 @@ class LocalIppServerTest {
     }
 
     @Test
+    fun `get-printer-attributes reports the real queued-job-count, not a hardcoded value`() {
+        val firstStarted = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val blockOnFirst = object : dev.jaspreet.printserver.render.RenderingPipeline {
+            override fun render(document: File, output: File, format: String) {
+                firstStarted.countDown()
+                release.await()
+            }
+        }
+        val port = start(blockOnFirst)
+        ipp(port, IppPacket(Operation.printJob, 9, operationGroup()), "%PDF".toByteArray())
+        assertTrue(firstStarted.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        ipp(port, IppPacket(Operation.printJob, 10, operationGroup()), "%PDF".toByteArray())
+
+        val resp = ipp(port, IppPacket(Operation.getPrinterAttributes, 11, operationGroup()))
+        assertEquals(2, resp[Tag.printerAttributes]!!.getValue(Types.queuedJobCount))
+        release.countDown()
+    }
+
+    @Test
     fun `oversized document is rejected with an ipp error, not a dropped connection`() {
         val port = start()
         // BodyReader's limit is enforced inside LocalIppServer; a body of a
