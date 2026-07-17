@@ -51,6 +51,26 @@ DRIVER_ERROR Job::Init(SystemServices *pSystemServices, JobAttributes *job_attrs
         return NO_PRINTER_SELECTED;
     }
 
+    // Tear down any pipeline/encapsulator left over from a previous job on
+    // this Job instance. Real CUPS filters are one-shot OS processes, so
+    // upstream only frees these in ~Job(); our JNI wrapper reuses one Job
+    // instance across many print jobs in a single long-lived process, so
+    // without this, Configure() below would read m_pPipeline's stale,
+    // already-executed pointer and append the new job's compressor onto the
+    // previous job's finished pipeline instead of starting fresh — corrupting
+    // output (rows silently compressed against stale leftover state).
+    Pipeline *stalePipeline = m_pPipeline;
+    while (stalePipeline) {
+        Pipeline *next = stalePipeline->next;
+        delete stalePipeline->Exec;
+        delete stalePipeline;
+        stalePipeline = next;
+    }
+    m_pPipeline = NULL;
+    if (m_pEncap) {
+        delete m_pEncap;
+    }
+
     m_pEncap = encap_intf;
     m_pSys = pSystemServices;
 

@@ -815,7 +815,7 @@ int HPCupsFilter::processRasterData(cups_raster_t *cups_raster)
                 WriteBMPRaster (kfp, black_raster, cups_header.cupsWidth/8, BLACK_RASTER);
             }
         }  // for() loop end
-		#ifndef DISABLE_IMAGEPROCESSOR 
+		#ifndef DISABLE_IMAGEPROCESSOR
 			if(strncmp(m_JA.printer_platform, "ljzjstream",10) == 0)
 			{
 				result = imageProcessorEndPage(imageProcessor);

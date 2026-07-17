@@ -38,7 +38,14 @@
 Pcl3Gui2::Pcl3Gui2() : Encapsulator()
 {
     speed_mech_enabled = true;
-    m_run_ernie_filter = true;
+    // Disabled: ErnieFilter's row-buffer/block-merge logic (submitRowToFilter,
+    // WriteBlockPixels) has a separate bug independent of the APDK_LITTLE_ENDIAN
+    // fix in CMakeLists.txt — confirmed via A/B test that white background rows
+    // near non-white content get corrupted into a gray/teal band, even with
+    // color decoding fixed. Content position/shape/color are otherwise correct
+    // with Ernie off; this only costs edge-sharpening quality. Root cause not
+    // yet isolated — suspect stale/misaligned data in the 4-row buffering cycle.
+    m_run_ernie_filter = false;
     crd_type = eCrd_color_only;   // pcl3 printers support RGB only ref:hplip-1701
     strcpy(m_szLanguage, "PCL3GUI");
 }

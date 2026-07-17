@@ -77,6 +77,14 @@ class ServerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // startForeground() must be called unconditionally and immediately: once the caller
+        // has invoked Context.startForegroundService(), Android requires this service to call
+        // startForeground() within the promotion window regardless of what happens after —
+        // calling stopSelf() instead does NOT satisfy that requirement and crashes with
+        // ForegroundServiceDidNotStartInTimeException. So the USB device/permission check (a
+        // foregroundServiceType="connectedDevice" service must already hold USB permission at
+        // this call, or the OS throws SecurityException) has to happen in the caller
+        // (MainActivity) BEFORE it ever calls startForegroundService(), not here.
         startForeground(NOTIFICATION_ID, buildNotification("Starting print server…"))
         if (pipelineActive.compareAndSet(false, true)) {
             thread(name = "pipeline-start") { startPipeline() }

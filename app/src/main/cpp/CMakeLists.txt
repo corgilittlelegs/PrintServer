@@ -32,7 +32,14 @@ target_include_directories(hpcupsjni PRIVATE
     ${CMAKE_SOURCE_DIR}/hpcups
     ${CMAKE_SOURCE_DIR}/hpcups-common
     ${CMAKE_SOURCE_DIR}/cupsraster)
-target_compile_definitions(hpcupsjni PRIVATE UNIX APDK_LINUX DISABLE_IMAGEPROCESSOR)
+# APDK_LITTLE_ENDIAN: gates byte-order-dependent pixel packing/unpacking in
+# ErnieFilter.h and CommonDefinitions.h (GetRed/GetGreen/GetBlue, get4Pixel/
+# put4Pixel). Undefined means those macros take the big-endian bit-shift
+# path, which corrupts every pixel read/write on arm64 (always little-endian)
+# — HPLIP's original build system defined this for x86 Linux but our CMake
+# port never did, so ErnieFilter's block-merge logic compared garbage color
+# values and smeared black across whole blocks near any non-white content.
+target_compile_definitions(hpcupsjni PRIVATE UNIX APDK_LINUX DISABLE_IMAGEPROCESSOR APDK_LITTLE_ENDIAN)
 # CONFDIR: HPLIP's system config dir (normally /etc/hp), read by get_conf()
 # for hplip.conf. No such install exists on Android — this just means
 # get_conf() harmlessly reports "not found" at runtime, matching reality.

@@ -1489,7 +1489,7 @@ ErnieFilter::ErnieFilter(int rowWidthInPixels, pixelTypes pixelType, unsigned in
     // The least compressible image will be all raw pixels. Maximum compressed size is:
     // full size + a bloat of Cmd byte + 1 VLI byte per 255 pixels rounded up to nearest integer.
 
-    int maxCompressionBufSize = m_row_width_in_bytes + 1 + ((int)ceil((double) MAX((rowWidthInPixels-2)/255, 0)));
+    int maxCompressionBufSize = m_row_width_in_bytes + 1 + ((int)ceil(MAX((double)(rowWidthInPixels-2) / 255, 0)));
 
     m_compression_out_buf = new unsigned char[maxCompressionBufSize];
     ASSERT(m_compression_out_buf);
