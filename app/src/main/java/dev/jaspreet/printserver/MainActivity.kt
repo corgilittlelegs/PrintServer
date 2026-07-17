@@ -12,6 +12,8 @@ import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -34,6 +36,18 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        val rootLayout = findViewById<View>(R.id.rootLayout)
+        val basePadding = rootLayout.paddingLeft // the 16dp set in activity_main.xml, same on all sides
+        ViewCompat.setOnApplyWindowInsetsListener(rootLayout) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(
+                basePadding + bars.left, basePadding + bars.top,
+                basePadding + bars.right, basePadding + bars.bottom,
+            )
+            insets
+        }
+
         ContextCompat.registerReceiver(
             this, usbPermissionReceiver, IntentFilter(UsbPrinterManager.ACTION_USB_PERMISSION),
             ContextCompat.RECEIVER_NOT_EXPORTED,
