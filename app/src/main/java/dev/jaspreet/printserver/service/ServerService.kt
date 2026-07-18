@@ -23,6 +23,7 @@ import dev.jaspreet.printserver.discovery.DiscoveryAdvertiser
 import dev.jaspreet.printserver.discovery.NsdAdvertiser
 import dev.jaspreet.printserver.activity.ActivityLog
 import dev.jaspreet.printserver.activity.ActivityStatus
+import dev.jaspreet.printserver.activity.toActivityStatus
 import dev.jaspreet.printserver.ipp.LocalIppServer
 import dev.jaspreet.printserver.ipp.PrinterCapabilities
 import dev.jaspreet.printserver.ipp.PrinterQuery
@@ -178,6 +179,8 @@ class ServerService : Service() {
         val pipeline = NativeRenderingPipeline(cacheDir, ppd.absolutePath)
         val spoolDir = File(cacheDir, "spool")
         JobQueue.cleanStaleSpool(spoolDir.apply { mkdirs() }) // drop leftovers from a run killed mid-job
+        // Unlike ActivityLog's 200-entry cap, this map has none — it's fine because it's
+        // scoped to one startLegacyPipeline run (one sharing session), not the process lifetime.
         val jobActivityIds = java.util.concurrent.ConcurrentHashMap<Int, Int>()
         val queue = JobQueue(
             pipeline, { transport },
@@ -186,14 +189,12 @@ class ServerService : Service() {
                 stopSelf()
             },
             onJobStateChanged = { job ->
-                val status = when (job.state) {
-                    JobState.PENDING,
-                    JobState.PROCESSING -> ActivityStatus.PRINTING
-                    JobState.COMPLETED -> ActivityStatus.PRINTED
-                    JobState.ABORTED,
-                    JobState.CANCELED -> ActivityStatus.FAILED
-                }
-                val activityId = jobActivityIds.getOrPut(job.id) {
+                val status = job.state.toActivityStatus()
+                // computeIfAbsent (not getOrPut — that's a plain get-then-put on a
+                // ConcurrentHashMap, not atomic) because JobQueue.submit() enqueues the job
+                // before firing this callback, so the worker thread can race the submitting
+                // thread here for the same new job id.
+                val activityId = jobActivityIds.computeIfAbsent(job.id) {
                     ActivityLog.record(
                         tier = 2, name = job.name, status = status,
                         clientAddress = job.clientAddress, format = job.format,
