@@ -6,7 +6,9 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.getValue
@@ -44,12 +46,7 @@ class MainActivity : AppCompatActivity() {
                     activityEntries = activityEntries,
                     onStartServerClick = { startServerIfPermitted() },
                     onStopServerClick = { stopService(Intent(this, ServerService::class.java)) },
-                    onBatteryExemptionClick = {
-                        startActivity(
-                            Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                                .setData(Uri.parse("package:$packageName"))
-                        )
-                    }
+                    onBatteryExemptionClick = { requestBatteryExemption() }
                 )
             }
         }
@@ -79,6 +76,18 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         unregisterReceiver(usbPermissionReceiver)
+    }
+
+    private fun requestBatteryExemption() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (pm.isIgnoringBatteryOptimizations(packageName)) {
+            Toast.makeText(this, "Battery optimization is already disabled for this app", Toast.LENGTH_SHORT).show()
+            return
+        }
+        startActivity(
+            Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                .setData(Uri.parse("package:$packageName"))
+        )
     }
 
     // Only calls startForegroundService() once USB permission for the printer is already
