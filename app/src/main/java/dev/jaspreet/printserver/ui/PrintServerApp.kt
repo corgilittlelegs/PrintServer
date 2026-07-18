@@ -3,6 +3,8 @@ package dev.jaspreet.printserver.ui
 import android.content.Context
 import android.os.PowerManager
 import androidx.compose.animation.*
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -26,11 +28,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -64,6 +66,11 @@ fun PrintServerApp(
     onRetryJob: (Int) -> Unit,
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val settingsRotationAngle by animateFloatAsState(
+        targetValue = if (showMenu) 360f else 0f,
+        animationSpec = tween(durationMillis = 1000, easing = FastOutSlowInEasing),
+        label = "settings_rotation"
+    )
     val context = LocalContext.current
     val appName = stringResource(id = R.string.app_name)
     val versionName = remember(context) {
@@ -107,140 +114,100 @@ fun PrintServerApp(
     }
 
     val scrollState = rememberScrollState()
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val scrollThreshold = with(density) { 80.dp.toPx() }
 
     Scaffold(
         topBar = {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp),
-                color = MaterialTheme.colorScheme.primaryContainer,
-                tonalElevation = 0.dp
-            ) {
-                TopAppBar(
-                    title = {
-                        Box(
-                            contentAlignment = Alignment.CenterStart,
-                            modifier = Modifier.fillMaxHeight()
-                        ) {
-                            // PrintServer App name & Version (Fades out on scroll)
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.graphicsLayer {
-                                    val progress = (scrollState.value / scrollThreshold).coerceIn(0f, 1f)
-                                    alpha = 1f - progress
-                                }
-                            ) {
-                                Text(
-                                    text = appName,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.SansSerif,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    fontSize = 20.sp
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "v$versionName",
-                                    fontWeight = FontWeight.Normal,
-                                    fontFamily = FontFamily.SansSerif,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
-                                    fontSize = 14.sp
-                                )
-                            }
-                            
-                            // "Sharing Active" or "Setup Printer" Title (Fades and slides up on scroll)
-                            Text(
-                                text = if (status.running) "Sharing Active" else "Setup Printer",
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.SansSerif,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                fontSize = 20.sp,
-                                modifier = Modifier.graphicsLayer {
-                                    val progress = (scrollState.value / scrollThreshold).coerceIn(0f, 1f)
-                                    alpha = progress
-                                    translationY = (1f - progress) * 15f
-                                }
-                            )
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { showMenu = !showMenu }) {
-                            Icon(
-                                imageVector = Icons.Default.Settings,
-                                contentDescription = "Settings",
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            text = appName,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.SansSerif,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            fontSize = 24.sp
+                        )
+                        Text(
+                            text = "Version $versionName",
+                            fontWeight = FontWeight.Normal,
+                            fontFamily = FontFamily.SansSerif,
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                            fontSize = 12.sp
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showMenu = !showMenu }) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            tint = MaterialTheme.colorScheme.onBackground,
+                            modifier = Modifier.rotate(settingsRotationAngle)
+                        )
+                    }
+                    MaterialTheme(
+                        shapes = MaterialTheme.shapes.copy(
+                            extraSmall = RoundedCornerShape(16.dp)
+                        )
+                    ) {
                         DropdownMenu(
                             expanded = showMenu,
                             onDismissRequest = { showMenu = false },
-                            modifier = Modifier.background(MaterialTheme.colorScheme.surface)
+                            modifier = Modifier
+                                .border(
+                                    BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
+                                    shape = RoundedCornerShape(16.dp)
+                                )
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Disable Battery Optimization") },
+                                text = { Text("Disable Battery Optimization", fontWeight = FontWeight.Medium) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Warning,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                },
                                 onClick = {
                                     showMenu = false
                                     onBatteryExemptionClick()
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Third-Party Licenses") },
+                                text = { Text("Third-Party Licenses", fontWeight = FontWeight.Medium) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Info,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                },
                                 onClick = {
                                     showMenu = false
                                     showLicensesDialog = true
                                 }
                             )
                         }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Transparent,
-                        titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                        actionIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent,
+                    titleContentColor = MaterialTheme.colorScheme.onBackground,
+                    actionIconContentColor = MaterialTheme.colorScheme.onBackground
                 )
-            }
+            )
         },
         containerColor = MaterialTheme.colorScheme.background
     ) { innerPadding ->
-        val layoutDirection = LocalLayoutDirection.current
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(
-                    start = innerPadding.calculateStartPadding(layoutDirection),
-                    end = innerPadding.calculateEndPadding(layoutDirection),
-                    bottom = innerPadding.calculateBottomPadding()
-                )
+                .padding(innerPadding)
                 .verticalScroll(scrollState)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer)
-            ) {
-                // Spacer matching the height of the TopAppBar to push content below it while extending the solid color underneath the app bar.
-                Spacer(modifier = Modifier.height(innerPadding.calculateTopPadding()))
-                
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 28.dp)
-                        .graphicsLayer {
-                            val progress = (scrollState.value / scrollThreshold).coerceIn(0f, 1f)
-                            alpha = 1f - progress
-                        }
-                ) {
-                    Text(
-                        text = if (status.running) "Sharing Active" else "Setup Printer",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Battery Optimization Warning Banner
             AnimatedVisibility(
