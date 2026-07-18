@@ -25,6 +25,7 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.Executors
+import java.util.concurrent.Semaphore
 
 /**
  * A synthetic IPP printer: the app IS the printer as far as clients can tell.
@@ -36,9 +37,14 @@ class LocalIppServer(
     private val jobQueue: JobQueue,
     private val spoolDir: File,
     private val maxDocumentBytes: Long = BodyReader.DEFAULT_MAX_BYTES,
+    private val maxConcurrentClients: Int = 64,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
     private val executor = Executors.newCachedThreadPool()
+
+    // Same rationale as IppRelayServer: bound thread growth from concurrent
+    // connections so a flood of LAN connections can't OOM the app.
+    private val clientSlots = Semaphore(maxConcurrentClients)
 
     val actualPort: Int get() = serverSocket?.localPort ?: port
 
@@ -48,7 +54,13 @@ class LocalIppServer(
         executor.execute {
             while (!ss.isClosed) {
                 val client = try { ss.accept() } catch (_: IOException) { break }
-                executor.execute { handleClient(client) }
+                if (!clientSlots.tryAcquire()) {
+                    try { client.close() } catch (_: IOException) {}
+                    continue
+                }
+                executor.execute {
+                    try { handleClient(client) } finally { clientSlots.release() }
+                }
             }
         }
     }

@@ -16,6 +16,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.util.concurrent.Executors
+import java.util.concurrent.Semaphore
 
 /**
  * Accepts LAN HTTP connections and relays each transaction over a pooled
@@ -26,9 +27,16 @@ class IppRelayServer(
     private val pool: ChannelPool,
     private val monitor: ActivityMonitor = ActivityMonitor.NONE,
     private val leaseTimeoutMs: Long = 60_000,
+    private val maxConcurrentClients: Int = 64,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
     private val executor = Executors.newCachedThreadPool()
+
+    // Caps concurrent client threads: without this, a peer on the LAN opening many
+    // connections at once (accidentally or maliciously) grows one thread per
+    // connection unboundedly and can exhaust memory. Connections beyond the cap are
+    // closed immediately instead of queuing, so they fail fast rather than hang.
+    private val clientSlots = Semaphore(maxConcurrentClients)
 
     val actualPort: Int get() = serverSocket?.localPort ?: port
 
@@ -38,7 +46,13 @@ class IppRelayServer(
         executor.execute {
             while (!ss.isClosed) {
                 val client = try { ss.accept() } catch (_: IOException) { break }
-                executor.execute { handleClient(client) }
+                if (!clientSlots.tryAcquire()) {
+                    try { client.close() } catch (_: IOException) {}
+                    continue
+                }
+                executor.execute {
+                    try { handleClient(client) } finally { clientSlots.release() }
+                }
             }
         }
     }

@@ -60,6 +60,7 @@ class JobQueue(
         jobs[job.id] = job
         pending.put(job)
         onJobStateChanged(job)
+        evictOldTerminalJobs()
         return job.id
     }
 
@@ -73,7 +74,24 @@ class JobQueue(
         val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format, clientAddress)
         jobs[job.id] = job
         onJobStateChanged(job)
+        evictOldTerminalJobs()
         return job.id
+    }
+
+    /**
+     * Bounds the jobs map: a client repeatedly submitting jobs over a long-running
+     * session would otherwise grow this map forever (terminal jobs are never
+     * otherwise removed). Only completed/aborted/canceled jobs are evicted, oldest
+     * first, so active (pending/processing) jobs are never dropped.
+     */
+    private fun evictOldTerminalJobs() {
+        val overflow = jobs.size - MAX_RETAINED_JOBS
+        if (overflow <= 0) return
+        jobs.values
+            .filter { it.state == JobState.COMPLETED || it.state == JobState.ABORTED || it.state == JobState.CANCELED }
+            .sortedBy { it.id }
+            .take(overflow)
+            .forEach { jobs.remove(it.id) }
     }
 
     /** Hands a job reserved via [reserve] to the worker now that its document is written. */
@@ -189,6 +207,9 @@ class JobQueue(
 
         // A single 300dpi color A4 page is tens of MB uncompressed; leave headroom for multi-page jobs.
         private const val MIN_FREE_SPACE_BYTES = 200L * 1_000_000L
+
+        // Caps the jobs map (see evictOldTerminalJobs) — mirrors ActivityLog's 200-entry cap.
+        private const val MAX_RETAINED_JOBS = 200
 
         /** Deletes leftover spool/render files from a run that never finished cleanly. Call before construction. */
         fun cleanStaleSpool(dir: File) {
