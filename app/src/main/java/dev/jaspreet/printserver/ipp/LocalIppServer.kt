@@ -55,6 +55,7 @@ class LocalIppServer(
 
     private fun handleClient(client: Socket) {
         client.soTimeout = 30_000
+        val clientAddress = client.inetAddress?.hostAddress
         client.use {
             val cin = BufferedInputStream(client.getInputStream())
             val cout = BufferedOutputStream(client.getOutputStream())
@@ -62,7 +63,7 @@ class LocalIppServer(
                 val head = try { HttpHead.parse(cin) ?: break } catch (_: IOException) { break }
                 val response = try {
                     val body = BodyReader.readAll(head, cin, maxDocumentBytes)
-                    handleIpp(body)
+                    handleIpp(body, clientAddress)
                 } catch (e: BodyTooLargeException) {
                     // The client already sent bytes we're discarding; the connection
                     // can't be reused, so this is the last response on it (Step below).
@@ -85,7 +86,7 @@ class LocalIppServer(
         }
     }
 
-    private fun handleIpp(body: ByteArray): IppPacket {
+    private fun handleIpp(body: ByteArray, clientAddress: String?): IppPacket {
         val input = IppInputStream(ByteArrayInputStream(body))
         val request = input.readPacket()
         // Any bytes after the IPP packet are the document payload (Print-Job).
@@ -96,8 +97,8 @@ class LocalIppServer(
             Operation.validateJob.code -> IppPacket(
                 Status.successfulOk, request.requestId, operationGroup(),
             )
-            Operation.printJob.code -> printJob(request, document)
-            Operation.createJob.code -> createJob(request)
+            Operation.printJob.code -> printJob(request, document, clientAddress)
+            Operation.createJob.code -> createJob(request, clientAddress)
             Operation.sendDocument.code -> sendDocument(request, document)
             Operation.closeJob.code -> closeJob(request)
             Operation.getJobAttributes.code -> jobAttributes(request)
@@ -121,7 +122,7 @@ class LocalIppServer(
         return IppPacket(Status.successfulOk, request.requestId, operationGroup(), filtered)
     }
 
-    private fun printJob(request: IppPacket, document: ByteArray): IppPacket {
+    private fun printJob(request: IppPacket, document: ByteArray, clientAddress: String?): IppPacket {
         if (document.isEmpty()) {
             return errorResponse(request.requestId, Status.clientErrorBadRequest)
         }
@@ -134,7 +135,7 @@ class LocalIppServer(
         val spool = File.createTempFile("job", spoolExtension(format), spoolDir)
         spool.writeBytes(document)
         val name = request[Tag.operationAttributes]?.getValue(Types.jobName)?.value ?: "untitled"
-        val jobId = jobQueue.submit(spool, name, format)
+        val jobId = jobQueue.submit(spool, name, format, clientAddress)
         // Report the queue's real state — submit() only enqueues, it does not
         // guarantee the worker has started (previously this hardcoded "processing").
         val actualState = jobQueue.get(jobId)?.state ?: JobState.PENDING
@@ -152,7 +153,7 @@ class LocalIppServer(
     }
 
     /** Create-Job: reserves a job-id before any document bytes arrive (two-phase print). */
-    private fun createJob(request: IppPacket): IppPacket {
+    private fun createJob(request: IppPacket, clientAddress: String?): IppPacket {
         val requestedUri = request[Tag.operationAttributes]?.getValue(Types.printerUri)
         if (requestedUri == null) {
             return errorResponse(request.requestId, Status.clientErrorBadRequest)
@@ -161,7 +162,7 @@ class LocalIppServer(
         spoolDir.mkdirs()
         val spool = File.createTempFile("job", spoolExtension(format), spoolDir)
         val name = request[Tag.operationAttributes]?.getValue(Types.jobName)?.value ?: "untitled"
-        val jobId = jobQueue.reserve(spool, name, format)
+        val jobId = jobQueue.reserve(spool, name, format, clientAddress)
         return IppPacket(
             Status.successfulOk, request.requestId,
             operationGroup(),
