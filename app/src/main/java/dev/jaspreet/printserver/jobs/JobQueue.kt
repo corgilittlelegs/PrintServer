@@ -147,6 +147,17 @@ class JobQueue(
         return newId
     }
 
+    /**
+     * 1-based rank of [id] among currently-PENDING jobs, oldest first — nextId is a
+     * strictly increasing AtomicInteger, so id order already equals FIFO submission
+     * order. Returns null if [id] is unknown, PROCESSING, or already terminal.
+     */
+    fun queuePosition(id: Int): Int? {
+        val job = jobs[id] ?: return null
+        if (job.state != JobState.PENDING) return null
+        return jobs.values.count { it.state == JobState.PENDING && it.id < id } + 1
+    }
+
     private fun process(job: PrintJob) {
         synchronized(job) {
             if (job.state == JobState.CANCELED) return

@@ -246,4 +246,41 @@ class JobQueueTest {
         assertNull(q.get(firstId)) // evicted
         assertNull(q.retry(firstId))
     }
+
+    @Test
+    fun `queuePosition ranks PENDING jobs in FIFO order`() {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val blockingPipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
+            override fun render(document: File, output: File, format: String) {
+                started.countDown()
+                release.await(5, TimeUnit.SECONDS)
+                output.writeBytes("X".toByteArray())
+            }
+        }
+        val q = JobQueue(blockingPipeline, { FakePrinterTransport { ByteArray(0) } }) {}
+        queue = q
+        val first = q.submit(pdf(), "job-a")   // occupies the worker (PROCESSING)
+        assertTrue(started.await(5, TimeUnit.SECONDS))
+        val second = q.submit(pdf(), "job-b")  // 1st in queue
+        val third = q.submit(pdf(), "job-c")   // 2nd in queue
+
+        assertNull("PROCESSING job has no queue position", q.queuePosition(first))
+        assertEquals(1, q.queuePosition(second))
+        assertEquals(2, q.queuePosition(third))
+
+        release.countDown()
+    }
+
+    @Test
+    fun `queuePosition on a terminal or unknown job returns null`() {
+        val printer = FakePrinterTransport { ByteArray(0) }
+        val done = CountDownLatch(1)
+        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), { printer }) { done.countDown() }
+        queue = q
+        val id = q.submit(pdf(), "ok-doc")
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertNull(q.queuePosition(id)) // COMPLETED
+        assertNull(q.queuePosition(999)) // unknown
+    }
 }
