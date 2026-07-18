@@ -2,7 +2,10 @@ package dev.jaspreet.printserver.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -22,6 +25,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.jaspreet.printserver.activity.ActivityEntry
+import dev.jaspreet.printserver.activity.ActivityStatus
 import dev.jaspreet.printserver.service.ServerStatus
 import dev.jaspreet.printserver.ui.components.UsbConnectionIllustration
 import dev.jaspreet.printserver.ui.components.WirelessSharingIllustration
@@ -39,6 +44,7 @@ import java.util.Date
 @Composable
 fun PrintServerApp(
     status: ServerStatus,
+    activityEntries: List<ActivityEntry>,
     onStartServerClick: () -> Unit,
     onStopServerClick: () -> Unit,
     onBatteryExemptionClick: () -> Unit,
@@ -453,6 +459,8 @@ fun PrintServerApp(
                         }
                     }
 
+                    ActivityCard(entries = activityEntries)
+
                     // Bottom Stop Sharing Button
                     Button(
                         onClick = onStopServerClick,
@@ -477,4 +485,133 @@ fun PrintServerApp(
             }
         }
     }
+}
+
+@Composable
+private fun ActivityCard(entries: List<ActivityEntry>) {
+    var expandedId by remember { mutableStateOf<Int?>(null) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = PureWhite),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
+            Text(
+                text = "Recent Activity",
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (entries.isEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Print,
+                        contentDescription = null,
+                        tint = MediumGray.copy(alpha = 0.5f),
+                        modifier = Modifier.size(32.dp)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "No print jobs yet this session.",
+                        fontSize = 13.sp,
+                        color = MediumGray
+                    )
+                }
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
+                    items(entries, key = { it.id }) { entry ->
+                        ActivityRow(
+                            entry = entry,
+                            expanded = expandedId == entry.id,
+                            onClick = { expandedId = if (expandedId == entry.id) null else entry.id }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActivityRow(entry: ActivityEntry, expanded: Boolean, onClick: () -> Unit) {
+    val (dotColor, label) = when (entry.status) {
+        ActivityStatus.PRINTED -> Color(0xFF4CAF50) to "Printed"
+        ActivityStatus.PRINTING -> SlateBlue to "Printing…"
+        ActivityStatus.FAILED -> Color(0xFFD32F2F) to
+            ("Failed" + (entry.failureReason?.let { " · $it" } ?: ""))
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .background(LightSlate.copy(alpha = 0.15f), RoundedCornerShape(8.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(imageVector = Icons.Default.Print, contentDescription = null, tint = SlateBlue)
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = entry.name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Charcoal)
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                    Box(modifier = Modifier.size(8.dp).background(dotColor, RoundedCornerShape(4.dp)))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = label, fontSize = 12.sp, color = MediumGray)
+                }
+            }
+            Text(text = relativeTime(entry), fontSize = 12.sp, color = MediumGray)
+        }
+        if (expanded) {
+            Column(
+                modifier = Modifier
+                    .padding(start = 48.dp, top = 8.dp)
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.background, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                entry.clientAddress?.let { DetailLine("Client", it) }
+                entry.sizeBytes?.let { DetailLine("Size", formatBytes(it)) }
+                entry.completedAt?.let { DetailLine("Duration", "%.1fs".format((it - entry.startedAt) / 1000.0)) }
+                entry.format?.let { DetailLine("Format", it) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailLine(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(text = label, fontSize = 12.sp, color = MediumGray, fontWeight = FontWeight.Medium)
+        Text(text = value, fontSize = 12.sp, color = Charcoal, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+private fun relativeTime(entry: ActivityEntry): String {
+    val elapsedMs = System.currentTimeMillis() - entry.startedAt
+    val minutes = elapsedMs / 60_000
+    return when {
+        entry.status == ActivityStatus.PRINTING && entry.completedAt == null && minutes < 1 -> "now"
+        minutes < 1 -> "just now"
+        minutes < 60 -> "${minutes}m ago"
+        else -> "${minutes / 60}h ago"
+    }
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
+    else -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
 }
