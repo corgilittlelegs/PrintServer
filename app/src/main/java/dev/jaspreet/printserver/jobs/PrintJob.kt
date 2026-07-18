@@ -13,4 +13,7 @@ class PrintJob(
 ) {
     @Volatile var state: JobState = JobState.PENDING
     @Volatile var stateReason: String = "none"
+    val submittedAtMs: Long = System.currentTimeMillis()
+    /** Set when this job was created via [JobQueue.retry] — the original job's id. Tracking only. */
+    @Volatile var retryOf: Int? = null
 }
