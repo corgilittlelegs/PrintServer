@@ -1,15 +1,21 @@
 package dev.jaspreet.printserver.ui.theme
 
+import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 
 // Color Palette from Design Inspiration
 val DarkNavy = Color(0xFF23314E)
@@ -31,7 +37,24 @@ private val LightColorScheme = lightColorScheme(
     surface = PureWhite,
     onSurface = Charcoal,
     primaryContainer = DarkNavy,
-    onPrimaryContainer = PureWhite
+    onPrimaryContainer = PureWhite,
+    surfaceVariant = OffWhite,
+    onSurfaceVariant = MediumGray
+)
+
+private val DarkColorScheme = darkColorScheme(
+    primary = LightSlate,
+    onPrimary = DarkNavy,
+    secondary = SlateBlue,
+    onSecondary = PureWhite,
+    background = Color(0xFF0F172A), // Tailwind Slate 900
+    onBackground = OffWhite,
+    surface = Color(0xFF1E293B), // Tailwind Slate 800
+    onSurface = PureWhite,
+    primaryContainer = Color(0xFF0F172A),
+    onPrimaryContainer = PureWhite,
+    surfaceVariant = Color(0xFF334155), // Tailwind Slate 700
+    onSurfaceVariant = LightSlate
 )
 
 val PrintServerTypography = Typography(
@@ -44,13 +67,13 @@ val PrintServerTypography = Typography(
     ),
     titleLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Medium,
+        fontWeight = FontWeight.SemiBold,
         fontSize = 20.sp,
         lineHeight = 26.sp,
         letterSpacing = 0.sp
     ),
     bodyLarge = TextStyle(
-        fontFamily = FontFamily.Default, // Sourced from Roboto system defaults
+        fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Normal,
         fontSize = 16.sp,
         lineHeight = 24.sp,
@@ -72,14 +95,33 @@ val PrintServerTypography = Typography(
     )
 )
 
+@Suppress("DEPRECATION")
 @Composable
 fun PrintServerTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
-    // Keep it light-themed to strictly match the requested corporate trust palette
+    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    val view = LocalView.current
+
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as? Activity)?.window
+            window?.let {
+                it.statusBarColor = colorScheme.primaryContainer.toArgb()
+                it.navigationBarColor = colorScheme.background.toArgb()
+                
+                val insetsController = WindowCompat.getInsetsController(it, view)
+                insetsController.isAppearanceLightStatusBars = !darkTheme
+                insetsController.isAppearanceLightNavigationBars = !darkTheme
+            }
+        }
+    }
+
     MaterialTheme(
-        colorScheme = LightColorScheme,
+        colorScheme = colorScheme,
         typography = PrintServerTypography,
         content = content
     )
 }
+

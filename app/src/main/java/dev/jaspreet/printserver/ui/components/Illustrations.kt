@@ -1,5 +1,6 @@
 package dev.jaspreet.printserver.ui.components
 
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
@@ -9,7 +10,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -19,13 +22,29 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import dev.jaspreet.printserver.ui.theme.AndroidGreen
-import dev.jaspreet.printserver.ui.theme.DarkNavy
-import dev.jaspreet.printserver.ui.theme.SlateBlue
+import kotlin.math.abs
+import kotlin.math.min
 
 @Composable
 fun UsbConnectionIllustration(
     modifier: Modifier = Modifier
 ) {
+    val lineColor = MaterialTheme.colorScheme.onSurface
+    val fillColor = MaterialTheme.colorScheme.surface
+    val accentColor = MaterialTheme.colorScheme.primary
+    val cardBgColor = MaterialTheme.colorScheme.surfaceVariant
+
+    val infiniteTransition = rememberInfiniteTransition(label = "usb_pulse")
+    val pulseProgress by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "usb_pulse_progress"
+    )
+
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -38,8 +57,6 @@ fun UsbConnectionIllustration(
             val height = size.height
 
             // Coordinates for phone bottom center and printer left-middle
-            // Phone is centered around X = width * 0.25f, bottom is at Y = height * 0.7f
-            // Printer is centered around X = width * 0.72f, left side is at X = width * 0.58f, Y = height * 0.65f
             val phoneBottomX = width * 0.28f
             val phoneBottomY = height * 0.70f
 
@@ -49,24 +66,49 @@ fun UsbConnectionIllustration(
             // Draw a beautiful curved USB cable path
             val path = Path().apply {
                 moveTo(phoneBottomX, phoneBottomY)
-                // Curve down, go right, and then curve up into the printer
                 cubicTo(
                     phoneBottomX, phoneBottomY + 60f,
-                    printerConnectX - 50f, phoneBottomY + 60f,
-                    printerConnectX - 20f, printerConnectY + 20f
+                    printerConnectX - 20f, printerConnectY + 20f,
+                    printerConnectX, printerConnectY
                 )
-                lineTo(printerConnectX, printerConnectY)
             }
 
             drawPath(
                 path = path,
-                color = DarkNavy,
+                color = lineColor.copy(alpha = 0.5f),
                 style = Stroke(width = 6f, cap = StrokeCap.Round)
+            )
+
+            // Calculate USB pulse position along the Bezier curve
+            val t = pulseProgress
+            val mt = 1f - t
+            val p0x = phoneBottomX
+            val p0y = phoneBottomY
+            val p1x = phoneBottomX
+            val p1y = phoneBottomY + 60f
+            val p2x = printerConnectX - 20f
+            val p2y = printerConnectY + 20f
+            val p3x = printerConnectX
+            val p3y = printerConnectY
+
+            val pulseX = mt * mt * mt * p0x + 3f * mt * mt * t * p1x + 3f * mt * t * t * p2x + t * t * t * p3x
+            val pulseY = mt * mt * mt * p0y + 3f * mt * mt * t * p1y + 3f * mt * t * t * p2y + t * t * t * p3y
+
+            // Draw the pulse glow
+            drawCircle(
+                color = accentColor,
+                radius = 8f,
+                center = Offset(pulseX, pulseY)
+            )
+            drawCircle(
+                color = accentColor.copy(alpha = 0.3f),
+                radius = 16f,
+                center = Offset(pulseX, pulseY)
             )
 
             // Draw USB Plug head near printer
             drawRect(
-                color = SlateBlue,
+                color = accentColor,
                 topLeft = Offset(printerConnectX - 18f, printerConnectY - 8f),
                 size = androidx.compose.ui.geometry.Size(18f, 16f)
             )
@@ -82,8 +124,8 @@ fun UsbConnectionIllustration(
                 modifier = Modifier
                     .width(55.dp)
                     .height(105.dp)
-                    .background(Color.White, RoundedCornerShape(8.dp))
-                    .border(3.dp, DarkNavy, RoundedCornerShape(8.dp)),
+                    .background(fillColor, RoundedCornerShape(8.dp))
+                    .border(3.dp, lineColor, RoundedCornerShape(8.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 // Speaker/Camera Notch
@@ -93,7 +135,7 @@ fun UsbConnectionIllustration(
                         .padding(top = 6.dp)
                         .width(16.dp)
                         .height(4.dp)
-                        .background(DarkNavy, RoundedCornerShape(2.dp))
+                        .background(lineColor, RoundedCornerShape(2.dp))
                 )
 
                 // Android Mascot Icon
@@ -111,7 +153,7 @@ fun UsbConnectionIllustration(
                         .padding(bottom = 6.dp)
                         .width(24.dp)
                         .height(3.dp)
-                        .background(DarkNavy.copy(alpha = 0.3f), RoundedCornerShape(1.5.dp))
+                        .background(lineColor.copy(alpha = 0.3f), RoundedCornerShape(1.5.dp))
                 )
             }
 
@@ -122,30 +164,28 @@ fun UsbConnectionIllustration(
                     .height(115.dp),
                 contentAlignment = Alignment.BottomCenter
             ) {
-                // Stack items to represent paper feeder and printer body
-                
-                // 1. Paper sticking out from the top
+                // Paper sticking out from the top
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(bottom = 50.dp)
                         .width(65.dp)
                         .height(55.dp)
-                        .background(Color.White, RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                        .background(fillColor, RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
                         .border(
                             2.5.dp,
-                            DarkNavy,
+                            lineColor,
                             RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp)
                         )
                 )
 
-                // 2. Printer Main Body
+                // Printer Main Body
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(72.dp)
-                        .background(Color.White, RoundedCornerShape(8.dp))
-                        .border(3.dp, DarkNavy, RoundedCornerShape(8.dp))
+                        .background(fillColor, RoundedCornerShape(8.dp))
+                        .border(3.dp, lineColor, RoundedCornerShape(8.dp))
                 ) {
                     // Control panel buttons/lights
                     Row(
@@ -173,8 +213,8 @@ fun UsbConnectionIllustration(
                             .padding(bottom = 12.dp)
                             .width(86.dp)
                             .height(16.dp)
-                            .background(Color.LightGray.copy(alpha = 0.3f), RoundedCornerShape(2.dp))
-                            .border(2.dp, DarkNavy, RoundedCornerShape(2.dp))
+                            .background(cardBgColor, RoundedCornerShape(2.dp))
+                            .border(2.dp, lineColor, RoundedCornerShape(2.dp))
                     )
 
                     // Sticking out printed paper
@@ -184,8 +224,8 @@ fun UsbConnectionIllustration(
                             .padding(bottom = 2.dp)
                             .width(76.dp)
                             .height(14.dp)
-                            .background(Color.White)
-                            .border(2.dp, DarkNavy, RoundedCornerShape(1.dp))
+                            .background(fillColor)
+                            .border(2.dp, lineColor, RoundedCornerShape(1.dp))
                     )
                 }
             }
@@ -197,6 +237,22 @@ fun UsbConnectionIllustration(
 fun WirelessSharingIllustration(
     modifier: Modifier = Modifier
 ) {
+    val lineColor = MaterialTheme.colorScheme.onSurface
+    val fillColor = MaterialTheme.colorScheme.surface
+    val accentColor = MaterialTheme.colorScheme.primary
+    val cardBgColor = MaterialTheme.colorScheme.surfaceVariant
+
+    val infiniteTransition = rememberInfiniteTransition(label = "wifi_pulse")
+    val time by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 4f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "wifi_time"
+    )
+
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -222,10 +278,10 @@ fun WirelessSharingIllustration(
                         .padding(bottom = 40.dp)
                         .width(55.dp)
                         .height(45.dp)
-                        .background(Color.White, RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                        .background(fillColor, RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
                         .border(
                             2.dp,
-                            DarkNavy,
+                            lineColor,
                             RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp)
                         )
                 )
@@ -235,8 +291,8 @@ fun WirelessSharingIllustration(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(60.dp)
-                        .background(Color.White, RoundedCornerShape(6.dp))
-                        .border(2.5.dp, DarkNavy, RoundedCornerShape(6.dp))
+                        .background(fillColor, RoundedCornerShape(6.dp))
+                        .border(2.5.dp, lineColor, RoundedCornerShape(6.dp))
                 ) {
                     Box(
                         modifier = Modifier
@@ -244,8 +300,8 @@ fun WirelessSharingIllustration(
                             .padding(bottom = 10.dp)
                             .width(70.dp)
                             .height(12.dp)
-                            .background(Color.LightGray.copy(alpha = 0.3f), RoundedCornerShape(1.dp))
-                            .border(1.5.dp, DarkNavy, RoundedCornerShape(1.dp))
+                            .background(cardBgColor, RoundedCornerShape(1.dp))
+                            .border(1.5.dp, lineColor, RoundedCornerShape(1.dp))
                     )
                 }
             }
@@ -263,7 +319,7 @@ fun WirelessSharingIllustration(
 
                 // Draw central dot
                 drawCircle(
-                    color = SlateBlue,
+                    color = accentColor,
                     radius = 6f,
                     center = Offset(centerX, centerY)
                 )
@@ -271,9 +327,15 @@ fun WirelessSharingIllustration(
                 // Draw concentric wireless wave arcs (left and right)
                 for (i in 1..3) {
                     val radius = 18f * i
+                    
+                    // We calculate alpha dynamically based on current animated time.
+                    val distance = abs(time - i)
+                    val distanceWrapped = min(distance, 4f - distance)
+                    val waveAlpha = (1f - distanceWrapped * 1.2f).coerceIn(0.15f, 1.0f)
+
                     // Right-facing waves
                     drawArc(
-                        color = SlateBlue.copy(alpha = 1.0f - (i - 1) * 0.25f),
+                        color = accentColor.copy(alpha = waveAlpha),
                         startAngle = -45f,
                         sweepAngle = 90f,
                         useCenter = false,
@@ -284,7 +346,7 @@ fun WirelessSharingIllustration(
 
                     // Left-facing waves
                     drawArc(
-                        color = SlateBlue.copy(alpha = 1.0f - (i - 1) * 0.25f),
+                        color = accentColor.copy(alpha = waveAlpha),
                         startAngle = 135f,
                         sweepAngle = 90f,
                         useCenter = false,
@@ -300,8 +362,8 @@ fun WirelessSharingIllustration(
                 modifier = Modifier
                     .width(50.dp)
                     .height(95.dp)
-                    .background(Color.White, RoundedCornerShape(8.dp))
-                    .border(2.5.dp, DarkNavy, RoundedCornerShape(8.dp)),
+                    .background(fillColor, RoundedCornerShape(8.dp))
+                    .border(2.5.dp, lineColor, RoundedCornerShape(8.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 // Notch
@@ -311,7 +373,7 @@ fun WirelessSharingIllustration(
                         .padding(top = 5.dp)
                         .width(14.dp)
                         .height(3.dp)
-                        .background(DarkNavy, RoundedCornerShape(1.5.dp))
+                        .background(lineColor, RoundedCornerShape(1.5.dp))
                 )
 
                 // Android Mascot
@@ -325,3 +387,4 @@ fun WirelessSharingIllustration(
         }
     }
 }
+
