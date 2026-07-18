@@ -15,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.jaspreet.printserver.activity.ActivityLog
+import dev.jaspreet.printserver.jobs.QueueState
 import dev.jaspreet.printserver.service.ServerService
 import dev.jaspreet.printserver.service.ServerState
 import dev.jaspreet.printserver.ui.PrintServerApp
@@ -39,14 +40,22 @@ class MainActivity : AppCompatActivity() {
         setContent {
             val status by ServerState.status.collectAsStateWithLifecycle()
             val activityEntries by ActivityLog.entries.collectAsStateWithLifecycle()
+            val queueEntries by QueueState.entries.collectAsStateWithLifecycle()
 
             PrintServerTheme {
                 PrintServerApp(
                     status = status,
                     activityEntries = activityEntries,
+                    queueEntries = queueEntries,
                     onStartServerClick = { startServerIfPermitted() },
                     onStopServerClick = { stopService(Intent(this, ServerService::class.java)) },
-                    onBatteryExemptionClick = { requestBatteryExemption() }
+                    onBatteryExemptionClick = { requestBatteryExemption() },
+                    onCancelJob = { id -> QueueState.cancel(id) },
+                    onRetryJob = { id ->
+                        if (QueueState.retry(id) == null) {
+                            Toast.makeText(this, "Job no longer available to retry", Toast.LENGTH_SHORT).show()
+                        }
+                    },
                 )
             }
         }
