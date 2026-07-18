@@ -19,6 +19,7 @@ data class ActivityEntry(
     val sizeBytes: Long? = null,
     val format: String? = null,        // Tier 2 only
     val failureReason: String? = null,
+    val jobId: Int? = null,            // Tier 2 only — the underlying JobQueue job id, for retry/cancel
 )
 
 /**
@@ -41,11 +42,12 @@ object ActivityLog {
         clientAddress: String? = null,
         sizeBytes: Long? = null,
         format: String? = null,
+        jobId: Int? = null,
     ): Int {
         val id = nextId.getAndIncrement()
         val entry = ActivityEntry(
             id = id, tier = tier, name = name, status = status, startedAt = startedAt,
-            clientAddress = clientAddress, sizeBytes = sizeBytes, format = format,
+            clientAddress = clientAddress, sizeBytes = sizeBytes, format = format, jobId = jobId,
         )
         _entries.update { (listOf(entry) + it).take(MAX_ENTRIES) }
         return id

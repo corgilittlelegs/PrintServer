@@ -71,4 +71,18 @@ class ActivityLogTest {
         assertNull(entry.format)
         assertNull(entry.failureReason)
     }
+
+    @Test
+    fun `record stores the optional jobId`() {
+        val id = ActivityLog.record(tier = 2, name = "a.pdf", status = ActivityStatus.PRINTING, jobId = 42)
+        val entry = ActivityLog.entries.value.first { it.id == id }
+        assertEquals(42, entry.jobId)
+    }
+
+    @Test
+    fun `jobId defaults to null`() {
+        val id = ActivityLog.record(tier = 1, name = "Print request", status = ActivityStatus.PRINTING)
+        val entry = ActivityLog.entries.value.first { it.id == id }
+        assertNull(entry.jobId)
+    }
 }
