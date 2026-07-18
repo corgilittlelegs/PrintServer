@@ -30,6 +30,7 @@ import dev.jaspreet.printserver.ipp.PrinterQuery
 import dev.jaspreet.printserver.ipp.TxtRecords
 import dev.jaspreet.printserver.jobs.JobQueue
 import dev.jaspreet.printserver.jobs.JobState
+import dev.jaspreet.printserver.jobs.QueueState
 import dev.jaspreet.printserver.relay.ActivityMonitor
 import dev.jaspreet.printserver.relay.ChannelPool
 import dev.jaspreet.printserver.relay.IppRelayServer
@@ -197,7 +198,7 @@ class ServerService : Service() {
                 val activityId = jobActivityIds.computeIfAbsent(job.id) {
                     ActivityLog.record(
                         tier = 2, name = job.name, status = status,
-                        clientAddress = job.clientAddress, format = job.format,
+                        clientAddress = job.clientAddress, format = job.format, jobId = job.id,
                     )
                 }
                 ActivityLog.update(activityId) { e ->
@@ -210,8 +211,9 @@ class ServerService : Service() {
                         failureReason = if (status == ActivityStatus.FAILED) job.stateReason else e.failureReason,
                     )
                 }
+                QueueState.refresh()
             },
-        ).also { jobQueue = it }
+        ).also { jobQueue = it; QueueState.attach(it) }
         val caps = PrinterCapabilities.deskJet2300(
             java.net.URI.create("ipp://${bindAddr.hostAddress}:$IPP_PORT/ipp/print")
         )
@@ -258,6 +260,7 @@ class ServerService : Service() {
         ippServer?.stop(); ippServer = null
         localIppServer?.stop(); localIppServer = null
         jobQueue?.shutdown(); jobQueue = null
+        QueueState.detach()
         rawRelay?.stop(); rawRelay = null
         legacyTransport?.close(); legacyTransport = null
         pool?.closeAll(); pool = null
