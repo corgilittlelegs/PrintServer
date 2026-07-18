@@ -12,6 +12,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.jaspreet.printserver.activity.ActivityLog
 import dev.jaspreet.printserver.service.ServerService
 import dev.jaspreet.printserver.service.ServerState
 import dev.jaspreet.printserver.ui.PrintServerApp
@@ -35,10 +36,12 @@ class MainActivity : AppCompatActivity() {
         // Setup the compose view and bind our state & action handlers
         setContent {
             val status by ServerState.status.collectAsStateWithLifecycle()
-            
+            val activityEntries by ActivityLog.entries.collectAsStateWithLifecycle()
+
             PrintServerTheme {
                 PrintServerApp(
                     status = status,
+                    activityEntries = activityEntries,
                     onStartServerClick = { startServerIfPermitted() },
                     onStopServerClick = { stopService(Intent(this, ServerService::class.java)) },
                     onBatteryExemptionClick = {
