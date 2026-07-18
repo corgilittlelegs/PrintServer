@@ -760,7 +760,7 @@ private fun elapsedSince(startMs: Long): String {
 }
 
 @Composable
-private fun ActivityCard(entries: List<ActivityEntry>) {
+private fun ActivityCard(entries: List<ActivityEntry>, onRetry: (Int) -> Unit) {
     var expandedId by remember { mutableStateOf<Int?>(null) }
 
     Card(
@@ -803,7 +803,8 @@ private fun ActivityCard(entries: List<ActivityEntry>) {
                         ActivityRow(
                             entry = entry,
                             expanded = expandedId == entry.id,
-                            onClick = { expandedId = if (expandedId == entry.id) null else entry.id }
+                            onClick = { expandedId = if (expandedId == entry.id) null else entry.id },
+                            onRetry = { entry.jobId?.let(onRetry) },
                         )
                     }
                 }
@@ -813,7 +814,7 @@ private fun ActivityCard(entries: List<ActivityEntry>) {
 }
 
 @Composable
-private fun ActivityRow(entry: ActivityEntry, expanded: Boolean, onClick: () -> Unit) {
+private fun ActivityRow(entry: ActivityEntry, expanded: Boolean, onClick: () -> Unit, onRetry: () -> Unit) {
     val (dotColor, label) = when (entry.status) {
         ActivityStatus.PRINTED -> Color(0xFF4CAF50) to "Printed"
         ActivityStatus.PRINTING -> MaterialTheme.colorScheme.primary to "Printing…"
@@ -866,6 +867,11 @@ private fun ActivityRow(entry: ActivityEntry, expanded: Boolean, onClick: () -> 
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
             )
+        }
+        if (entry.status == ActivityStatus.FAILED && entry.jobId != null) {
+            TextButton(onClick = onRetry, modifier = Modifier.align(Alignment.End)) {
+                Text("Retry")
+            }
         }
         if (expanded) {
             Column(
