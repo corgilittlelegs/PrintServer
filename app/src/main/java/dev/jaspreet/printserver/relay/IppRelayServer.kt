@@ -1,11 +1,16 @@
 package dev.jaspreet.printserver.relay
 
 import android.util.Log
+import dev.jaspreet.printserver.activity.ActivityLog
+import dev.jaspreet.printserver.activity.ActivityStatus
 import dev.jaspreet.printserver.http.HttpHead
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import java.io.ByteArrayInputStream
 import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStream
+import java.io.SequenceInputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -40,6 +45,7 @@ class IppRelayServer(
 
     private fun handleClient(client: Socket) {
         client.soTimeout = 30_000
+        val clientAddress = client.inetAddress?.hostAddress
         client.use {
             val cin = BufferedInputStream(client.getInputStream())
             val cout = BufferedOutputStream(client.getOutputStream())
@@ -54,14 +60,36 @@ class IppRelayServer(
                     writeServiceUnavailable(cout)
                     break
                 }
+
+                var relayInput: InputStream = cin
+                var activityId: Int? = null
+                val isIpp = head.get("Content-Type")?.startsWith("application/ipp", ignoreCase = true) == true
+                if (isIpp) {
+                    val (peeked, opId) = peekIppOperation(cin)
+                    relayInput = peeked
+                    if (opId != null && opId in PRINT_OPERATIONS) {
+                        activityId = ActivityLog.record(
+                            tier = 1, name = "Print request", status = ActivityStatus.PRINTING,
+                            clientAddress = clientAddress,
+                            sizeBytes = head.get("Content-Length")?.toLongOrNull(),
+                        )
+                    }
+                }
+
                 monitor.begin()
                 try {
-                    HttpRelay.forward(head, cin, cout, channel)
+                    HttpRelay.forward(head, relayInput, cout, channel)
                     pool.release(channel)
+                    activityId?.let { id ->
+                        ActivityLog.update(id) { it.copy(status = ActivityStatus.PRINTED, completedAt = System.currentTimeMillis()) }
+                    }
                 } catch (e: Exception) {
                     // Channel state unknown mid-transaction: never reuse it.
                     Log.w(TAG, "discarding channel after transaction failure", e)
                     pool.discard(channel)
+                    activityId?.let { id ->
+                        ActivityLog.update(id) { it.copy(status = ActivityStatus.FAILED, completedAt = System.currentTimeMillis(), failureReason = e.message) }
+                    }
                     break
                 } finally {
                     monitor.end()
@@ -69,6 +97,28 @@ class IppRelayServer(
                 if (head.get("Connection")?.equals("close", ignoreCase = true) == true) break
             }
         }
+    }
+
+    /**
+     * Reads up to the first 4 bytes of an IPP request (version-major, version-minor,
+     * operation-id) without touching anything beyond that — no attribute-group or
+     * document parsing. Always returns a stream that reproduces the original byte
+     * sequence exactly (the peeked bytes are re-prepended via SequenceInputStream),
+     * so HttpRelay.forward's zero-buffering behavior is unaffected. Returns a null
+     * operation-id if fewer than 4 bytes were available (malformed/short request —
+     * let HttpRelay/the printer surface that error naturally).
+     */
+    private fun peekIppOperation(cin: InputStream): Pair<InputStream, Int?> {
+        val peek = ByteArray(4)
+        var read = 0
+        while (read < 4) {
+            val n = cin.read(peek, read, 4 - read)
+            if (n < 0) break
+            read += n
+        }
+        val combined = SequenceInputStream(ByteArrayInputStream(peek, 0, read), cin)
+        val opId = if (read == 4) ((peek[2].toInt() and 0xFF) shl 8) or (peek[3].toInt() and 0xFF) else null
+        return combined to opId
     }
 
     private fun writeServiceUnavailable(cout: OutputStream) {
@@ -87,5 +137,9 @@ class IppRelayServer(
 
     private companion object {
         const val TAG = "IppRelayServer"
+
+        // IPP operation-ids that initiate a print (Print-Job, Create-Job, Send-Document).
+        // Everything else (Get-Printer-Attributes, Validate-Job, Cancel-Job, ...) stays silent.
+        val PRINT_OPERATIONS = setOf(0x0002, 0x0005, 0x0006)
     }
 }
