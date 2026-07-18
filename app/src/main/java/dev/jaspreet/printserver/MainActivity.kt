@@ -49,8 +49,7 @@ class MainActivity : AppCompatActivity() {
                             Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
                                 .setData(Uri.parse("package:$packageName"))
                         )
-                    },
-                    onLicensesClick = { showLicensesDialog() }
+                    }
                 )
             }
         }
@@ -82,22 +81,16 @@ class MainActivity : AppCompatActivity() {
         unregisterReceiver(usbPermissionReceiver)
     }
 
-    private fun showLicensesDialog() {
-        val notice = assets.open("licenses/NOTICE.md").bufferedReader().readText()
-        androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle(R.string.licenses_button)
-            .setMessage(notice)
-            .setPositiveButton(android.R.string.ok, null)
-            .show()
-    }
-
     // Only calls startForegroundService() once USB permission for the printer is already
     // held — see the comment in ServerService.onStartCommand for why that ordering matters.
     // If permission isn't held yet, requests it and relies on usbPermissionReceiver to retry
     // once the user answers the system dialog.
     private fun startServerIfPermitted() {
         val usb = UsbPrinterManager(this)
-        val device = usb.findPrinter() ?: return
+        val device = usb.findPrinter() ?: run {
+            ServerState.update { it.copy(message = "No USB printer detected — plug one in and try again") }
+            return
+        }
         if (!usb.hasPermission(device)) {
             usb.requestPermission(device)
             return
