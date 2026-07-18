@@ -42,7 +42,7 @@ class JobQueueTest {
     }
 
     @Test
-    fun `render failure aborts the job and deletes the spool file`() {
+    fun `render failure aborts the job but keeps the spool file for retry`() {
         val spool = pdf()
         val done = CountDownLatch(1)
         val q = JobQueue(
@@ -53,7 +53,7 @@ class JobQueueTest {
         val id = q.submit(spool, "broken-doc")
         assertTrue(done.await(5, TimeUnit.SECONDS))
         assertEquals(JobState.ABORTED, q.get(id)!!.state)
-        assertFalse(spool.exists())
+        assertTrue(spool.exists())
     }
 
     @Test
@@ -160,5 +160,23 @@ class JobQueueTest {
         assertEquals(JobState.ABORTED, q.get(id)!!.state)
         assertEquals(1, states.count { it == JobState.ABORTED })
         release.countDown()
+    }
+
+    @Test
+    fun `evicting a retained ABORTED job deletes its spool file`() {
+        // MAX_RETAINED_JOBS is 200 — submit 201 jobs that all fail, forcing eviction of the oldest.
+        val done = java.util.concurrent.atomic.AtomicInteger(0)
+        val finishedAll = CountDownLatch(201)
+        val q = JobQueue(
+            FakeRenderingPipeline(failWith = IOException("bad pdf")),
+            { FakePrinterTransport { ByteArray(0) } },
+        ) { done.incrementAndGet(); finishedAll.countDown() }
+        queue = q
+        val firstSpool = pdf()
+        val firstId = q.submit(firstSpool, "job-0")
+        repeat(200) { i -> q.submit(pdf(), "job-${i + 1}") }
+        assertTrue(finishedAll.await(10, TimeUnit.SECONDS))
+        assertNull("oldest job should have been evicted", q.get(firstId))
+        assertFalse("evicted job's spool file should be deleted", firstSpool.exists())
     }
 }

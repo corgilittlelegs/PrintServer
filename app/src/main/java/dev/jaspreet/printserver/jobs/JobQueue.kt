@@ -91,7 +91,10 @@ class JobQueue(
             .filter { it.state == JobState.COMPLETED || it.state == JobState.ABORTED || it.state == JobState.CANCELED }
             .sortedBy { it.id }
             .take(overflow)
-            .forEach { jobs.remove(it.id) }
+            .forEach {
+                it.spoolFile.delete()
+                jobs.remove(it.id)
+            }
     }
 
     /** Hands a job reserved via [reserve] to the worker now that its document is written. */
@@ -156,7 +159,9 @@ class JobQueue(
             job.state = JobState.ABORTED
             job.stateReason = "document-format-error"
         } finally {
-            job.spoolFile.delete()
+            // ABORTED jobs keep their spool file so JobQueue.retry() can resubmit it;
+            // it's cleaned up by evictOldTerminalJobs() or cleanStaleSpool() on restart.
+            if (job.state != JobState.ABORTED) job.spoolFile.delete()
             rendered.delete()
             onJobStateChanged(job)
             onJobFinished(job)
