@@ -60,7 +60,18 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
 
-        // Launched by USB attach intent -> start serving immediately.
+        handleUsbAttachIntent(intent)
+    }
+
+    // MainActivity is singleTop (see AndroidManifest.xml) so a USB-attach intent while the
+    // activity is already on top is delivered here instead of spawning a second instance.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleUsbAttachIntent(intent)
+    }
+
+    private fun handleUsbAttachIntent(intent: Intent?) {
         if (intent?.action == "android.hardware.usb.action.USB_DEVICE_ATTACHED") {
             startServerIfPermitted()
         }
