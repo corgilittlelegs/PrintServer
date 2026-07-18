@@ -7,3 +7,6 @@ native/downloads/
 native/build/
 app/.cxx/
 .superpowers/
+
+# Kotlin/Gradle incremental compilation cache
+.kotlin/
