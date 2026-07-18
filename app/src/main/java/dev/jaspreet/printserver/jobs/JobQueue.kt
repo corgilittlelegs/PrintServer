@@ -27,6 +27,10 @@ class JobQueue(
      *  hung render leaks its thread and permanently poisons this queue — the
      *  caller (ServerService) is expected to tear down and let the user restart. */
     private val onPipelineStuck: () -> Unit = {},
+    /** Fired on every PrintJob state transition (PENDING at submit/reserve, PROCESSING at
+     *  render start, terminal state at the end) — for live activity-feed UI. Unlike
+     *  [onJobFinished], this also fires for CANCELED and fires multiple times per job. */
+    private val onJobStateChanged: (PrintJob) -> Unit = {},
     private val onJobFinished: (PrintJob) -> Unit = {},
 ) {
     private val nextId = AtomicInteger(1)
@@ -51,10 +55,11 @@ class JobQueue(
         }
     }
 
-    fun submit(spoolFile: File, name: String, format: String = "application/pdf"): Int {
-        val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format)
+    fun submit(spoolFile: File, name: String, format: String = "application/pdf", clientAddress: String? = null): Int {
+        val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format, clientAddress)
         jobs[job.id] = job
         pending.put(job)
+        onJobStateChanged(job)
         return job.id
     }
 
@@ -64,9 +69,10 @@ class JobQueue(
      * in a later request. [spoolFile] must exist (even if empty); [enqueue] hands the job
      * to the worker once its document has actually been written.
      */
-    fun reserve(spoolFile: File, name: String, format: String = "application/pdf"): Int {
-        val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format)
+    fun reserve(spoolFile: File, name: String, format: String = "application/pdf", clientAddress: String? = null): Int {
+        val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format, clientAddress)
         jobs[job.id] = job
+        onJobStateChanged(job)
         return job.id
     }
 
@@ -90,12 +96,16 @@ class JobQueue(
     /** True if the job was still pending and is now canceled. */
     fun cancel(id: Int): Boolean {
         val job = jobs[id] ?: return false
-        synchronized(job) {
+        val canceled = synchronized(job) {
             if (job.state != JobState.PENDING) return false
             job.state = JobState.CANCELED
-            job.spoolFile.delete()
-            return true
+            true
         }
+        if (canceled) {
+            onJobStateChanged(job)
+            job.spoolFile.delete()
+        }
+        return canceled
     }
 
     private fun process(job: PrintJob) {
@@ -103,6 +113,7 @@ class JobQueue(
             if (job.state == JobState.CANCELED) return
             job.state = JobState.PROCESSING
         }
+        onJobStateChanged(job)
         val rendered = File(job.spoolFile.parentFile!!, "${job.spoolFile.name}.out")
         try {
             checkFreeSpace(job.spoolFile.parentFile)
@@ -117,6 +128,7 @@ class JobQueue(
                 poisoned = true
                 job.state = JobState.ABORTED
                 job.stateReason = "render-timeout"
+                onJobStateChanged(job)
                 onPipelineStuck()
                 return
             }
@@ -129,6 +141,7 @@ class JobQueue(
         } finally {
             job.spoolFile.delete()
             rendered.delete()
+            onJobStateChanged(job)
             onJobFinished(job)
         }
     }
@@ -140,6 +153,7 @@ class JobQueue(
         }
         job.stateReason = reason
         job.spoolFile.delete()
+        onJobStateChanged(job)
         onJobFinished(job)
     }
 

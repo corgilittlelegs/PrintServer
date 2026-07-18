@@ -9,6 +9,7 @@ class PrintJob(
     val name: String,
     val spoolFile: File,
     val format: String = "application/pdf",
+    val clientAddress: String? = null,
 ) {
     @Volatile var state: JobState = JobState.PENDING
     @Volatile var stateReason: String = "none"
