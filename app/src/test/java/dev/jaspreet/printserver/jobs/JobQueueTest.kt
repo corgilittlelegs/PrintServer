@@ -134,4 +134,31 @@ class JobQueueTest {
         release.countDown()
         assertTrue(states.contains(JobState.CANCELED))
     }
+
+    @Test
+    fun `render timeout fires onJobStateChanged exactly once with ABORTED`() {
+        val release = CountDownLatch(1)
+        val blockingPipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
+            override fun render(document: File, output: File, format: String) {
+                release.await(5, TimeUnit.SECONDS)
+                output.writeBytes("X".toByteArray())
+            }
+        }
+        val states = java.util.Collections.synchronizedList(mutableListOf<JobState>())
+        val q = JobQueue(
+            blockingPipeline, { FakePrinterTransport { ByteArray(0) } },
+            renderTimeoutMs = 100,
+            onJobStateChanged = { job -> states += job.state },
+        ) {}
+        queue = q
+        val id = q.submit(pdf(), "job-timeout")
+        // Wait for the ABORTED state to show up (process() runs on the worker thread).
+        val deadline = System.currentTimeMillis() + 5000
+        while (q.get(id)!!.state != JobState.ABORTED && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10)
+        }
+        assertEquals(JobState.ABORTED, q.get(id)!!.state)
+        assertEquals(1, states.count { it == JobState.ABORTED })
+        release.countDown()
+    }
 }

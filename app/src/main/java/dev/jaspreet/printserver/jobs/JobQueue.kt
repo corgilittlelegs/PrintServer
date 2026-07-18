@@ -128,7 +128,6 @@ class JobQueue(
                 poisoned = true
                 job.state = JobState.ABORTED
                 job.stateReason = "render-timeout"
-                onJobStateChanged(job)
                 onPipelineStuck()
                 return
             }
