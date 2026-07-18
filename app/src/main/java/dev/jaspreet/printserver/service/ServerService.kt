@@ -21,11 +21,14 @@ import dev.jaspreet.printserver.MainActivity
 import dev.jaspreet.printserver.R
 import dev.jaspreet.printserver.discovery.DiscoveryAdvertiser
 import dev.jaspreet.printserver.discovery.NsdAdvertiser
+import dev.jaspreet.printserver.activity.ActivityLog
+import dev.jaspreet.printserver.activity.ActivityStatus
 import dev.jaspreet.printserver.ipp.LocalIppServer
 import dev.jaspreet.printserver.ipp.PrinterCapabilities
 import dev.jaspreet.printserver.ipp.PrinterQuery
 import dev.jaspreet.printserver.ipp.TxtRecords
 import dev.jaspreet.printserver.jobs.JobQueue
+import dev.jaspreet.printserver.jobs.JobState
 import dev.jaspreet.printserver.relay.ActivityMonitor
 import dev.jaspreet.printserver.relay.ChannelPool
 import dev.jaspreet.printserver.relay.IppRelayServer
@@ -175,11 +178,37 @@ class ServerService : Service() {
         val pipeline = NativeRenderingPipeline(cacheDir, ppd.absolutePath)
         val spoolDir = File(cacheDir, "spool")
         JobQueue.cleanStaleSpool(spoolDir.apply { mkdirs() }) // drop leftovers from a run killed mid-job
+        val jobActivityIds = java.util.concurrent.ConcurrentHashMap<Int, Int>()
         val queue = JobQueue(
             pipeline, { transport },
             onPipelineStuck = {
                 update { ServerStatus(message = "Rendering got stuck — restart the app to recover") }
                 stopSelf()
+            },
+            onJobStateChanged = { job ->
+                val status = when (job.state) {
+                    JobState.PENDING,
+                    JobState.PROCESSING -> ActivityStatus.PRINTING
+                    JobState.COMPLETED -> ActivityStatus.PRINTED
+                    JobState.ABORTED,
+                    JobState.CANCELED -> ActivityStatus.FAILED
+                }
+                val activityId = jobActivityIds.getOrPut(job.id) {
+                    ActivityLog.record(
+                        tier = 2, name = job.name, status = status,
+                        clientAddress = job.clientAddress, format = job.format,
+                    )
+                }
+                ActivityLog.update(activityId) { e ->
+                    e.copy(
+                        status = status,
+                        sizeBytes = if (job.state == JobState.PENDING ||
+                            job.state == JobState.PROCESSING
+                        ) job.spoolFile.length() else e.sizeBytes,
+                        completedAt = if (status != ActivityStatus.PRINTING) System.currentTimeMillis() else e.completedAt,
+                        failureReason = if (status == ActivityStatus.FAILED) job.stateReason else e.failureReason,
+                    )
+                }
             },
         ).also { jobQueue = it }
         val caps = PrinterCapabilities.deskJet2300(
@@ -240,6 +269,7 @@ class ServerService : Service() {
         runCatching { unregisterReceiver(detachReceiver) }
         while (wakeLock?.isHeld == true) wakeLock?.release()
         update { ServerStatus() }
+        ActivityLog.clear()
         super.onDestroy()
     }
 
