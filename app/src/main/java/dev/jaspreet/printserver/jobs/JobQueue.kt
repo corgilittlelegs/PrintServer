@@ -174,7 +174,7 @@ class JobQueue(
             job.state = JobState.ABORTED
         }
         job.stateReason = reason
-        job.spoolFile.delete()
+        if (job.state != JobState.ABORTED) job.spoolFile.delete()
         onJobStateChanged(job)
         onJobFinished(job)
     }
