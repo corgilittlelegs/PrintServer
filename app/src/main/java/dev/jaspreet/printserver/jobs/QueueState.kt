@@ -32,7 +32,9 @@ object QueueState {
         _entries.value = emptyList()
     }
 
-    /** Recomputes the visible snapshot from the attached queue's current active jobs. */
+    /** Recomputes the visible snapshot from the attached queue's current active jobs.
+     *  Racing with detach() is possible (reads `queue` into a local before detach nulls
+     *  it) but benign — worst case is one stale snapshot, corrected by the next refresh(). */
     fun refresh() {
         val q = queue ?: return
         _entries.value = q.listActive().sortedBy { it.id }.map { job ->

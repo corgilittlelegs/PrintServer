@@ -4,6 +4,7 @@ import dev.jaspreet.printserver.render.FakeRenderingPipeline
 import dev.jaspreet.printserver.usb.FakePrinterTransport
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -89,7 +90,7 @@ class QueueStateTest {
         assertTrue(done.await(5, TimeUnit.SECONDS))
 
         val newId = QueueState.retry(id)
-        assertEquals(true, newId != null)
+        assertNotNull(newId)
         assertEquals(false, QueueState.cancel(999)) // unknown id
     }
 }
