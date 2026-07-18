@@ -129,6 +129,24 @@ class JobQueue(
         return canceled
     }
 
+    /**
+     * Resubmits an ABORTED job's original document as a new job, copied into a fresh
+     * spool file (never shares the original file with the new job — a second retry of
+     * the same original id, or the new job completing and deleting its own file, must
+     * not affect the other). Returns the new job's id, or null if [id] isn't an
+     * eligible ABORTED job with its spool file still present (e.g. already evicted).
+     */
+    fun retry(id: Int): Int? {
+        val job = jobs[id] ?: return null
+        if (job.state != JobState.ABORTED) return null
+        if (!job.spoolFile.exists()) return null
+        val copy = File.createTempFile("retry", ".${job.spoolFile.extension}", job.spoolFile.parentFile)
+        job.spoolFile.copyTo(copy, overwrite = true)
+        val newId = submit(copy, job.name, job.format, job.clientAddress)
+        jobs[newId]?.retryOf = id
+        return newId
+    }
+
     private fun process(job: PrintJob) {
         synchronized(job) {
             if (job.state == JobState.CANCELED) return

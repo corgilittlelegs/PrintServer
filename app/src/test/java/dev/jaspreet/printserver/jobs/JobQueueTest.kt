@@ -5,6 +5,7 @@ import dev.jaspreet.printserver.usb.FakePrinterTransport
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -178,5 +179,71 @@ class JobQueueTest {
         assertTrue(finishedAll.await(10, TimeUnit.SECONDS))
         assertNull("oldest job should have been evicted", q.get(firstId))
         assertFalse("evicted job's spool file should be deleted", firstSpool.exists())
+    }
+
+    @Test
+    fun `retry copies the original spool bytes into a new file and reruns it`() {
+        var failNext = true
+        val pipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
+            override fun render(document: File, output: File, format: String) {
+                if (failNext) throw IOException("bad pdf")
+                output.writeBytes(document.readBytes())
+            }
+        }
+        val done = CountDownLatch(1)
+        val q = JobQueue(pipeline, { FakePrinterTransport { ByteArray(0) } }) { done.countDown() }
+        queue = q
+        val spool = pdf()
+        spool.writeText("original-bytes")
+        val id = q.submit(spool, "broken-doc")
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertEquals(JobState.ABORTED, q.get(id)!!.state)
+        assertTrue(spool.exists())
+
+        failNext = false
+        val newId = q.retry(id)
+        assertNotNull(newId)
+        assertEquals(id, q.get(newId!!)!!.retryOf)
+        val deadline = System.currentTimeMillis() + 5000
+        while (q.get(newId)!!.state.let { it == JobState.PENDING || it == JobState.PROCESSING } &&
+            System.currentTimeMillis() < deadline
+        ) {
+            Thread.sleep(10)
+        }
+        assertEquals(JobState.COMPLETED, q.get(newId)!!.state)
+    }
+
+    @Test
+    fun `retry on a non-ABORTED job returns null`() {
+        val printer = FakePrinterTransport { ByteArray(0) }
+        val done = CountDownLatch(1)
+        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), { printer }) { done.countDown() }
+        queue = q
+        val id = q.submit(pdf(), "ok-doc")
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertEquals(JobState.COMPLETED, q.get(id)!!.state)
+        assertNull(q.retry(id))
+    }
+
+    @Test
+    fun `retry on an unknown job id returns null`() {
+        val q = JobQueue(FakeRenderingPipeline(), { FakePrinterTransport { ByteArray(0) } }) {}
+        queue = q
+        assertNull(q.retry(999))
+    }
+
+    @Test
+    fun `retry after the spool file was evicted returns null`() {
+        val done = java.util.concurrent.CountDownLatch(201)
+        val q = JobQueue(
+            FakeRenderingPipeline(failWith = IOException("bad pdf")),
+            { FakePrinterTransport { ByteArray(0) } },
+        ) { done.countDown() }
+        queue = q
+        val firstId = q.submit(pdf(), "job-0")
+        repeat(200) { i -> q.submit(pdf(), "job-${i + 1}") }
+        assertTrue(done.await(10, TimeUnit.SECONDS))
+        assertNull(q.get(firstId)) // evicted
+        assertNull(q.retry(firstId))
     }
 }
