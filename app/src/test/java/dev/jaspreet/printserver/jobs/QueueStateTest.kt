@@ -4,6 +4,7 @@ import dev.jaspreet.printserver.render.FakeRenderingPipeline
 import dev.jaspreet.printserver.usb.FakePrinterTransport
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -92,5 +93,52 @@ class QueueStateTest {
         val newId = QueueState.retry(id)
         assertNotNull(newId)
         assertEquals(false, QueueState.cancel(999)) // unknown id
+    }
+
+    @Test
+    fun `isRetryable is true only for ABORTED jobs`() {
+        val spool = pdf()
+        val done = CountDownLatch(1)
+        val q = JobQueue(
+            FakeRenderingPipeline(failWith = java.io.IOException("bad pdf")),
+            { FakePrinterTransport { ByteArray(0) } },
+        ) { done.countDown() }
+        queue = q
+        QueueState.attach(q)
+        val id = q.submit(spool, "broken-doc")
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertEquals(JobState.ABORTED, q.get(id)!!.state)
+
+        assertTrue(QueueState.isRetryable(id))
+        assertFalse(QueueState.isRetryable(999)) // unknown
+    }
+
+    @Test
+    fun `isRetryable is false for a canceled job`() {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val blockingPipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
+            override fun render(document: File, output: File, format: String) {
+                started.countDown()
+                release.await(5, TimeUnit.SECONDS)
+                output.writeBytes("X".toByteArray())
+            }
+        }
+        val q = JobQueue(blockingPipeline, { FakePrinterTransport { ByteArray(0) } }) {}
+        queue = q
+        QueueState.attach(q)
+        q.submit(pdf(), "job-a") // occupies worker
+        assertTrue(started.await(5, TimeUnit.SECONDS))
+        val second = q.submit(pdf(), "job-b")
+        assertTrue(q.cancel(second))
+
+        assertFalse(QueueState.isRetryable(second))
+        release.countDown()
+    }
+
+    @Test
+    fun `isRetryable is false when nothing is attached`() {
+        QueueState.detach()
+        assertFalse(QueueState.isRetryable(1))
     }
 }

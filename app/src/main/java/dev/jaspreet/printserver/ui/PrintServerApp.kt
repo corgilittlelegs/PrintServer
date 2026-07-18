@@ -44,6 +44,7 @@ import dev.jaspreet.printserver.activity.ActivityEntry
 import dev.jaspreet.printserver.activity.ActivityStatus
 import dev.jaspreet.printserver.jobs.JobState
 import dev.jaspreet.printserver.jobs.QueueEntry
+import dev.jaspreet.printserver.jobs.QueueState
 import dev.jaspreet.printserver.service.ServerStatus
 import dev.jaspreet.printserver.ui.components.UsbConnectionIllustration
 import dev.jaspreet.printserver.ui.components.WirelessSharingIllustration
@@ -805,6 +806,7 @@ private fun ActivityCard(entries: List<ActivityEntry>, onRetry: (Int) -> Unit) {
                             expanded = expandedId == entry.id,
                             onClick = { expandedId = if (expandedId == entry.id) null else entry.id },
                             onRetry = { entry.jobId?.let(onRetry) },
+                            canRetry = entry.jobId?.let { QueueState.isRetryable(it) } ?: false,
                         )
                     }
                 }
@@ -814,7 +816,7 @@ private fun ActivityCard(entries: List<ActivityEntry>, onRetry: (Int) -> Unit) {
 }
 
 @Composable
-private fun ActivityRow(entry: ActivityEntry, expanded: Boolean, onClick: () -> Unit, onRetry: () -> Unit) {
+private fun ActivityRow(entry: ActivityEntry, expanded: Boolean, onClick: () -> Unit, onRetry: () -> Unit, canRetry: Boolean) {
     val (dotColor, label) = when (entry.status) {
         ActivityStatus.PRINTED -> Color(0xFF4CAF50) to "Printed"
         ActivityStatus.PRINTING -> MaterialTheme.colorScheme.primary to "Printing…"
@@ -868,7 +870,7 @@ private fun ActivityRow(entry: ActivityEntry, expanded: Boolean, onClick: () -> 
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
             )
         }
-        if (entry.status == ActivityStatus.FAILED && entry.jobId != null) {
+        if (canRetry) {
             TextButton(onClick = onRetry, modifier = Modifier.align(Alignment.End)) {
                 Text("Retry")
             }

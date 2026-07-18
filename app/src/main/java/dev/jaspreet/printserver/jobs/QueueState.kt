@@ -52,4 +52,7 @@ object QueueState {
     fun cancel(id: Int): Boolean = queue?.cancel(id) ?: false
 
     fun retry(id: Int): Int? = queue?.retry(id)
+
+    /** True if [id] currently refers to an ABORTED job (i.e. `retry(id)` would succeed). */
+    fun isRetryable(id: Int): Boolean = queue?.get(id)?.state == JobState.ABORTED
 }
