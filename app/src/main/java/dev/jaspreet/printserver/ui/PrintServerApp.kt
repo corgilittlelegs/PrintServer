@@ -47,8 +47,7 @@ fun PrintServerApp(
     activityEntries: List<ActivityEntry>,
     onStartServerClick: () -> Unit,
     onStopServerClick: () -> Unit,
-    onBatteryExemptionClick: () -> Unit,
-    onLicensesClick: () -> Unit
+    onBatteryExemptionClick: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -59,6 +58,21 @@ fun PrintServerApp(
             packageInfo.versionName ?: "0.1.0"
         } catch (e: Exception) {
             "0.1.0"
+        }
+    }
+
+    var showLicensesDialog by remember { mutableStateOf(false) }
+    var licensesText by remember { mutableStateOf("") }
+
+    LaunchedEffect(showLicensesDialog) {
+        if (showLicensesDialog && licensesText.isEmpty()) {
+            licensesText = try {
+                context.assets.open("licenses/NOTICE.md")
+                    .bufferedReader()
+                    .use { it.readText() }
+            } catch (e: Exception) {
+                "Error loading licenses notice."
+            }
         }
     }
 
@@ -110,7 +124,7 @@ fun PrintServerApp(
                             text = { Text("Third-Party Licenses") },
                             onClick = {
                                 showMenu = false
-                                onLicensesClick()
+                                showLicensesDialog = true
                             }
                         )
                     }
@@ -360,6 +374,25 @@ fun PrintServerApp(
                         }
                     }
 
+                    // Stop Sharing Button
+                    Button(
+                        onClick = onStopServerClick,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(24.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = LightSlate,
+                            contentColor = Charcoal
+                        )
+                    ) {
+                        Text(
+                            text = "Stop Sharing",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+
                     // Card 2: Discovery Information
                     Card(
                         modifier = Modifier.fillMaxWidth(),
@@ -460,30 +493,45 @@ fun PrintServerApp(
                     }
 
                     ActivityCard(entries = activityEntries)
-
-                    // Bottom Stop Sharing Button
-                    Button(
-                        onClick = onStopServerClick,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp),
-                        shape = RoundedCornerShape(24.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = LightSlate,
-                            contentColor = Charcoal
-                        )
-                    ) {
-                        Text(
-                            text = "Stop Sharing",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
                 }
                 
                 Spacer(modifier = Modifier.height(24.dp))
             }
         }
+    }
+
+    if (showLicensesDialog) {
+        AlertDialog(
+            onDismissRequest = { showLicensesDialog = false },
+            title = {
+                Text(
+                    text = "Third-Party Licenses",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleLarge
+                )
+            },
+            text = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 400.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = licensesText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MediumGray
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showLicensesDialog = false }) {
+                    Text("OK", color = SlateBlue, fontWeight = FontWeight.Bold)
+                }
+            },
+            shape = RoundedCornerShape(16.dp),
+            containerColor = PureWhite
+        )
     }
 }
 
