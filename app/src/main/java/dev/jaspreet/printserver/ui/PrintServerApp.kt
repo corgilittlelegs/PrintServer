@@ -42,6 +42,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.jaspreet.printserver.R
 import dev.jaspreet.printserver.activity.ActivityEntry
 import dev.jaspreet.printserver.activity.ActivityStatus
+import dev.jaspreet.printserver.jobs.JobState
+import dev.jaspreet.printserver.jobs.QueueEntry
 import dev.jaspreet.printserver.service.ServerStatus
 import dev.jaspreet.printserver.ui.components.UsbConnectionIllustration
 import dev.jaspreet.printserver.ui.components.WirelessSharingIllustration
@@ -53,9 +55,12 @@ import java.util.Date
 fun PrintServerApp(
     status: ServerStatus,
     activityEntries: List<ActivityEntry>,
+    queueEntries: List<QueueEntry>,
     onStartServerClick: () -> Unit,
     onStopServerClick: () -> Unit,
-    onBatteryExemptionClick: () -> Unit
+    onBatteryExemptionClick: () -> Unit,
+    onCancelJob: (Int) -> Unit,
+    onRetryJob: (Int) -> Unit,
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -638,8 +643,11 @@ fun PrintServerApp(
                             }
                         }
 
+                        // Live Print Queue
+                        QueueCard(entries = queueEntries, onCancel = onCancelJob)
+
                         // Activity Log Feed
-                        ActivityCard(entries = activityEntries)
+                        ActivityCard(entries = activityEntries, onRetry = onRetryJob)
                     }
                 }
             }
@@ -680,6 +688,74 @@ fun PrintServerApp(
             shape = RoundedCornerShape(16.dp),
             containerColor = MaterialTheme.colorScheme.surface
         )
+    }
+}
+
+@Composable
+private fun QueueCard(entries: List<QueueEntry>, onCancel: (Int) -> Unit) {
+    if (entries.isEmpty()) return
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
+            Text(
+                text = "Print Queue",
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            entries.forEachIndexed { index, entry ->
+                QueueRow(entry = entry, onCancel = { onCancel(entry.id) })
+                if (index != entries.lastIndex) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QueueRow(entry: QueueEntry, onCancel: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = entry.name,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            val statusLabel = when (entry.state) {
+                JobState.PROCESSING -> "Printing…"
+                else -> "Queued" + (entry.position?.let { " · #$it" } ?: "")
+            }
+            Text(
+                text = "$statusLabel · ${elapsedSince(entry.submittedAtMs)} · ${formatBytes(entry.sizeBytes)}",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
+        }
+        if (entry.state == JobState.PENDING) {
+            TextButton(onClick = onCancel) {
+                Text("Cancel", color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+}
+
+private fun elapsedSince(startMs: Long): String {
+    val minutes = (System.currentTimeMillis() - startMs) / 60_000
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "${minutes}m"
+        else -> "${minutes / 60}h"
     }
 }
 
