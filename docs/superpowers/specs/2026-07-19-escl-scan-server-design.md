@@ -41,11 +41,15 @@ dependency today is `jipp-core`). It implements the standard eSCL endpoints:
 `NsdAdvertiser`, added alongside it, not replacing anything.
 
 `ScanPipeline` (from Spec A) is widened to accept two new parameters: a resolution
-(`Int`, dpi) and a new `ScanColorMode` enum — deliberately a *new* enum
-(`COLOR`, `GRAYSCALE`, `BLACK_AND_WHITE`), not a reuse of print's `ColorMode`, because
-LEDM's actual color-depth granularity is three modes (`Color8`/`Gray8`/`K1`), matching
-`bb_ledm.c`'s own `ce_element` table — print's simpler two-value `ColorMode` would lose
-the black-and-white/grayscale distinction.
+(`Int`, dpi) and a new `ScanColorMode` enum (`COLOR`, `GRAYSCALE`) — deliberately a
+*new* enum, not a reuse of print's `ColorMode`, since it lives in the `scan` package
+alongside `ScannerState`/`PollResult`, matching how those are named for scan-specific
+concepts. Only two values, not three: `bb_ledm.c`'s `ce_element` table defines a `K1`
+(1-bit black-and-white) mode, but its own job-creation code
+(`bb_start_scan()`'s `BitDepth` computation) hardcodes `8` on every branch regardless —
+true 1-bit output isn't actually reachable through this exact protocol path, so
+modeling a `BLACK_AND_WHITE` value would advertise a mode that silently downgrades to
+grayscale. Anything that isn't `Color8` maps to `ColorSpace=Gray` at 8-bit depth.
 
 A new `LedmCapabilities` module queries `GET /Scan/ScanCaps` live over the USB transport
 (reusing Spec A's existing `LedmRequests`/`ChunkedHttp`/`PullReader` machinery — no new
