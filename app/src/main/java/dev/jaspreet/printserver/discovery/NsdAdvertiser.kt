@@ -33,6 +33,16 @@ class NsdAdvertiser(context: Context) : DiscoveryAdvertiser {
         register(info)
     }
 
+    override fun advertiseEscl(name: String, port: Int, txt: Map<String, String>) {
+        val info = NsdServiceInfo().apply {
+            serviceName = name
+            serviceType = "_uscan._tcp"
+            setPort(port)
+            txt.forEach { (k, v) -> setAttribute(k, v) }
+        }
+        register(info)
+    }
+
     private fun register(info: NsdServiceInfo) {
         val listener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(i: NsdServiceInfo) { Log.i(TAG, "Registered ${i.serviceName} ${i.serviceType}") }
