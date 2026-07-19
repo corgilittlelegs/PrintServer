@@ -44,11 +44,14 @@ class ScanPipeline(
             ?: throw IOException("No Location header in create-job response")
 
         var pollsLeft = maxPolls
+        var isFirstPoll = true
         while (true) {
             val pollReader = send(LedmRequests.getResourceRequest(jobUrl, host))
             ChunkedHttp.readHeader(pollReader)
             val pollBody = String(ChunkedHttp.readChunkedBody(pollReader), Charsets.US_ASCII)
-            when (val result = LedmResponses.parsePollResponse(pollBody)) {
+            val result = LedmResponses.parsePollResponse(pollBody, isFirstPoll)
+            isFirstPoll = false
+            when (result) {
                 is PollResult.PageReady -> {
                     val binReader = send(LedmRequests.getResourceRequest(result.binaryUrl, host))
                     ChunkedHttp.readHeader(binReader)

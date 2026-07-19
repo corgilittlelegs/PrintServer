@@ -34,33 +34,45 @@ class LedmResponsesTest {
     }
 
     @Test
-    fun `poll response with no PreScanPage tag is NoDocument`() {
-        val result = LedmResponses.parsePollResponse("<Jobs><Job><j:JobState>Processing</j:JobState></Job></Jobs>")
+    fun `poll response with no PreScanPage tag is NoDocument on the first poll`() {
+        val result = LedmResponses.parsePollResponse(
+            "<Jobs><Job><j:JobState>Processing</j:JobState></Job></Jobs>",
+            isFirstPoll = true,
+        )
         assertEquals(PollResult.NoDocument, result)
+    }
+
+    @Test
+    fun `poll response with no PreScanPage tag is StillWaiting on later polls`() {
+        val result = LedmResponses.parsePollResponse(
+            "<Jobs><Job><j:JobState>Processing</j:JobState></Job></Jobs>",
+            isFirstPoll = false,
+        )
+        assertEquals(PollResult.StillWaiting, result)
     }
 
     @Test
     fun `poll response reporting canceled by device is Canceled`() {
         val body = "<PreScanPage><PageState>CanceledByDevice</PageState></PreScanPage>"
-        assertEquals(PollResult.Canceled, LedmResponses.parsePollResponse(body))
+        assertEquals(PollResult.Canceled, LedmResponses.parsePollResponse(body, isFirstPoll = false))
     }
 
     @Test
     fun `poll response reporting job canceled is Canceled`() {
         val body = "<PreScanPage><j:JobState>Canceled</j:JobState></PreScanPage>"
-        assertEquals(PollResult.Canceled, LedmResponses.parsePollResponse(body))
+        assertEquals(PollResult.Canceled, LedmResponses.parsePollResponse(body, isFirstPoll = false))
     }
 
     @Test
     fun `poll response reporting job completed is Completed`() {
         val body = "<PreScanPage><j:JobState>Completed</j:JobState></PreScanPage>"
-        assertEquals(PollResult.Completed, LedmResponses.parsePollResponse(body))
+        assertEquals(PollResult.Completed, LedmResponses.parsePollResponse(body, isFirstPoll = false))
     }
 
     @Test
     fun `poll response ready to upload extracts the BinaryURL`() {
         val body = "<PreScanPage><PageState>ReadyToUpload</PageState><BinaryURL>/Scan/Jobs/JobList/1/Pages/1/Image</BinaryURL></PreScanPage>"
-        val result = LedmResponses.parsePollResponse(body)
+        val result = LedmResponses.parsePollResponse(body, isFirstPoll = false)
         assertTrue(result is PollResult.PageReady)
         assertEquals("/Scan/Jobs/JobList/1/Pages/1/Image", (result as PollResult.PageReady).binaryUrl)
     }
@@ -68,6 +80,6 @@ class LedmResponsesTest {
     @Test
     fun `poll response still processing without a terminal state is StillWaiting`() {
         val body = "<PreScanPage><j:JobState>Processing</j:JobState></PreScanPage>"
-        assertEquals(PollResult.StillWaiting, LedmResponses.parsePollResponse(body))
+        assertEquals(PollResult.StillWaiting, LedmResponses.parsePollResponse(body, isFirstPoll = false))
     }
 }
