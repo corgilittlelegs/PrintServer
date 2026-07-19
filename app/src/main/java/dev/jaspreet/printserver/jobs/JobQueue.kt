@@ -55,8 +55,15 @@ class JobQueue(
         }
     }
 
-    fun submit(spoolFile: File, name: String, format: String = "application/pdf", clientAddress: String? = null): Int {
-        val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format, clientAddress)
+    fun submit(
+        spoolFile: File,
+        name: String,
+        format: String = "application/pdf",
+        clientAddress: String? = null,
+        quality: PrintQuality = PrintQuality.NORMAL,
+        colorMode: ColorMode = ColorMode.COLOR,
+    ): Int {
+        val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format, clientAddress, quality, colorMode)
         jobs[job.id] = job
         pending.put(job)
         onJobStateChanged(job)
@@ -70,8 +77,15 @@ class JobQueue(
      * in a later request. [spoolFile] must exist (even if empty); [enqueue] hands the job
      * to the worker once its document has actually been written.
      */
-    fun reserve(spoolFile: File, name: String, format: String = "application/pdf", clientAddress: String? = null): Int {
-        val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format, clientAddress)
+    fun reserve(
+        spoolFile: File,
+        name: String,
+        format: String = "application/pdf",
+        clientAddress: String? = null,
+        quality: PrintQuality = PrintQuality.NORMAL,
+        colorMode: ColorMode = ColorMode.COLOR,
+    ): Int {
+        val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format, clientAddress, quality, colorMode)
         jobs[job.id] = job
         onJobStateChanged(job)
         evictOldTerminalJobs()
@@ -142,7 +156,7 @@ class JobQueue(
         if (!job.spoolFile.exists()) return null
         val copy = File.createTempFile("retry", ".${job.spoolFile.extension}", job.spoolFile.parentFile)
         job.spoolFile.copyTo(copy, overwrite = true)
-        val newId = submit(copy, job.name, job.format, job.clientAddress)
+        val newId = submit(copy, job.name, job.format, job.clientAddress, job.quality, job.colorMode)
         jobs[newId]?.retryOf = id
         return newId
     }
@@ -167,7 +181,7 @@ class JobQueue(
         val rendered = File(job.spoolFile.parentFile!!, "${job.spoolFile.name}.out")
         try {
             checkFreeSpace(job.spoolFile.parentFile)
-            val future = renderExecutor.submit { pipeline.render(job.spoolFile, rendered, job.format) }
+            val future = renderExecutor.submit { pipeline.render(job.spoolFile, rendered, job.format, job.quality, job.colorMode) }
             try {
                 future.get(renderTimeoutMs, TimeUnit.MILLISECONDS)
             } catch (e: TimeoutException) {

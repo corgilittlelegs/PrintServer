@@ -283,4 +283,30 @@ class JobQueueTest {
         assertNull(q.queuePosition(id)) // COMPLETED
         assertNull(q.queuePosition(999)) // unknown
     }
+
+    @Test
+    fun `submit passes quality and color mode through to the rendering pipeline`() {
+        val printer = FakePrinterTransport { ByteArray(0) }
+        val done = CountDownLatch(1)
+        val pipeline = FakeRenderingPipeline("PCL!".toByteArray())
+        val q = JobQueue(pipeline, { printer }) { done.countDown() }
+        queue = q
+        q.submit(pdf(), "test-doc", quality = PrintQuality.HIGH, colorMode = ColorMode.MONOCHROME)
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertEquals(listOf(PrintQuality.HIGH), pipeline.qualities)
+        assertEquals(listOf(ColorMode.MONOCHROME), pipeline.colorModes)
+    }
+
+    @Test
+    fun `submit defaults to NORMAL quality and COLOR mode when not specified`() {
+        val printer = FakePrinterTransport { ByteArray(0) }
+        val done = CountDownLatch(1)
+        val pipeline = FakeRenderingPipeline("PCL!".toByteArray())
+        val q = JobQueue(pipeline, { printer }) { done.countDown() }
+        queue = q
+        q.submit(pdf(), "test-doc")
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertEquals(listOf(PrintQuality.NORMAL), pipeline.qualities)
+        assertEquals(listOf(ColorMode.COLOR), pipeline.colorModes)
+    }
 }
