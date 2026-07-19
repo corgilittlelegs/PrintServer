@@ -24,6 +24,8 @@ import dev.jaspreet.printserver.discovery.NsdAdvertiser
 import dev.jaspreet.printserver.activity.ActivityLog
 import dev.jaspreet.printserver.activity.ActivityStatus
 import dev.jaspreet.printserver.activity.toActivityStatus
+import dev.jaspreet.printserver.escl.EsclTxtRecords
+import dev.jaspreet.printserver.escl.LocalEsclServer
 import dev.jaspreet.printserver.ipp.LocalIppServer
 import dev.jaspreet.printserver.ipp.PrinterCapabilities
 import dev.jaspreet.printserver.ipp.PrinterQuery
@@ -37,6 +39,8 @@ import dev.jaspreet.printserver.relay.IppRelayServer
 import dev.jaspreet.printserver.relay.Raw9100Relay
 import dev.jaspreet.printserver.render.NativeRenderingPipeline
 import dev.jaspreet.printserver.render.PpdAsset
+import dev.jaspreet.printserver.scan.LedmCapabilities
+import dev.jaspreet.printserver.scan.ScanPipeline
 import dev.jaspreet.printserver.usb.DeviceId
 import dev.jaspreet.printserver.usb.DeviceIdInfo
 import dev.jaspreet.printserver.usb.UsbPrinterManager
@@ -55,6 +59,8 @@ class ServerService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var jobQueue: JobQueue? = null
     private var localIppServer: LocalIppServer? = null
+    private var localEsclServer: LocalEsclServer? = null
+    private var scanTransport: UsbTransport? = null
     private val pipelineActive = AtomicBoolean(false)
     @Volatile private var servedDeviceId: Int? = null
 
@@ -225,6 +231,33 @@ class ServerService : Service() {
         val relay = Raw9100Relay(RAW_PORT) { transport }.also { rawRelay = it }
         relay.start(bindAddr)
 
+        // Scan side (Spec B): open the LEDM scan interface and, if the live ScanCaps
+        // query succeeds, start the eSCL server on it. A missing scan interface or a
+        // failed capability query just means this printer doesn't support (or we can't
+        // yet drive) scanning -- the print pipeline above must not be affected.
+        var liveScanCapabilities: dev.jaspreet.printserver.scan.ScannerCapabilities? = null
+        val scan = usb.openScanTransport(device)
+        if (scan != null) {
+            scanTransport = scan
+            liveScanCapabilities = try {
+                LedmCapabilities.query(scan)
+            } catch (e: Exception) {
+                Log.w(TAG, "ScanCaps query failed, scan server not started: ${e.message}")
+                null
+            }
+            if (liveScanCapabilities != null) {
+                LocalEsclServer(
+                    port = ESCL_PORT,
+                    makeAndModel = caps.makeAndModel,
+                    capabilities = liveScanCapabilities,
+                    spoolDir = spoolDir,
+                    performScan = { resolution, colorMode, output ->
+                        ScanPipeline(scan).scan(output, resolution, colorMode)
+                    },
+                ).also { localEsclServer = it }.start(bindAddr)
+            }
+        }
+
         advertiser = NsdAdvertiser(this).also {
             // Raw 9100 (_pdl-datastream._tcp) is deliberately NOT advertised over mDNS
             // here: a second Bonjour service type under the same instance name made
@@ -234,6 +267,9 @@ class ServerService : Service() {
             // The port-9100 socket itself (Raw9100Relay above) stays open for clients
             // that already have a vendor driver and connect to it by IP directly.
             it.advertiseIpp(caps.makeAndModel, IPP_PORT, TxtRecords.forIpp(caps.toPrinterInfo()))
+            if (liveScanCapabilities != null) {
+                it.advertiseEscl(caps.makeAndModel, ESCL_PORT, EsclTxtRecords.forEscl(liveScanCapabilities, caps.makeAndModel))
+            }
         }
         update {
             it.copy(
@@ -259,10 +295,12 @@ class ServerService : Service() {
         advertiser?.stopAll(); advertiser = null
         ippServer?.stop(); ippServer = null
         localIppServer?.stop(); localIppServer = null
+        localEsclServer?.stop(); localEsclServer = null
         jobQueue?.shutdown(); jobQueue = null
         QueueState.detach()
         rawRelay?.stop(); rawRelay = null
         legacyTransport?.close(); legacyTransport = null
+        scanTransport?.close(); scanTransport = null
         pool?.closeAll(); pool = null
         servedDeviceId = null
         pipelineActive.set(false)
@@ -307,5 +345,6 @@ class ServerService : Service() {
         private const val NOTIFICATION_ID = 1
         const val IPP_PORT = 8631
         const val RAW_PORT = 9100
+        const val ESCL_PORT = 8632
     }
 }
