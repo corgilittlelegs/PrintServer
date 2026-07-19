@@ -64,4 +64,18 @@ class PrinterCapabilitiesTest {
             caps.makeAndModel.contains("HP"),
         )
     }
+
+    @Test
+    fun `advertises draft normal and high print quality`() {
+        val group = caps.asPrinterAttributes()
+        assertEquals(
+            listOf(
+                com.hp.jipp.model.PrintQuality.draft,
+                com.hp.jipp.model.PrintQuality.normal,
+                com.hp.jipp.model.PrintQuality.high,
+            ),
+            group.getValues(Types.printQualitySupported),
+        )
+        assertEquals(com.hp.jipp.model.PrintQuality.normal, group.getValue(Types.printQualityDefault))
+    }
 }

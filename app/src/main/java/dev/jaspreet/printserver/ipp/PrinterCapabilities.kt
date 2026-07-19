@@ -98,7 +98,7 @@ class PrinterCapabilities(
         Types.outputBinDefault.of(KeywordOrName("face-down")),
         Types.outputBinSupported.of(KeywordOrName("face-down")),
         Types.printQualityDefault.of(PrintQuality.normal),
-        Types.printQualitySupported.of(PrintQuality.normal),
+        Types.printQualitySupported.of(PrintQuality.draft, PrintQuality.normal, PrintQuality.high),
         Types.pagesPerMinute.of(8),
         Types.printerInfo.of(makeAndModel),
         Types.printerLocation.of(""),
