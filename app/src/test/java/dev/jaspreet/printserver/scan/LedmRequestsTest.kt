@@ -25,6 +25,23 @@ class LedmRequestsTest {
     }
 
     @Test
+    fun `builds the scan capabilities request`() {
+        val req = LedmRequests.scanCapsRequest("localhost")
+        assertEquals(
+            "GET /Scan/ScanCaps HTTP/1.1\r\n" +
+                "Host: localhost\r\n" +
+                "User-Agent: hplip\r\n" +
+                "Accept: text/xml\r\n" +
+                "Accept-Language: en-us,en\r\n" +
+                "Accept-Charset:utf-8\r\n" +
+                "Keep-Alive: 20\r\n" +
+                "Proxy-Connection: keep-alive\r\n" +
+                "Cookie: AccessCounter=new\r\n0\r\n\r\n",
+            req,
+        )
+    }
+
+    @Test
     fun `builds the create-job request header with the given content length`() {
         val req = LedmRequests.createJobHeader("localhost", 321)
         assertTrue(req.startsWith("POST /Scan/Jobs HTTP/1.1\r\n"))
