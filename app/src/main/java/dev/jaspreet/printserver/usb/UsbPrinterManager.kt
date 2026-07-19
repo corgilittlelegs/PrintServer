@@ -79,6 +79,12 @@ class UsbPrinterManager(private val context: Context) {
             .firstOrNull { IppUsb.isLegacyPrinter(it.interfaceClass, it.interfaceSubclass, it.interfaceProtocol) }
             ?.let { openInterface(device, it) }
 
+    /** Opens the first LEDM scan-data interface (255/4), for the scan pipeline. */
+    fun openScanTransport(device: UsbDevice): UsbTransport? =
+        device.interfaces()
+            .firstOrNull { ScanUsb.isLedmScan(it.interfaceClass, it.interfaceSubclass) }
+            ?.let { openInterface(device, it) }
+
     private fun openInterface(device: UsbDevice, iface: UsbInterface): UsbTransport? {
         var outEp: UsbEndpoint? = null
         var inEp: UsbEndpoint? = null
