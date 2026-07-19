@@ -251,15 +251,24 @@ class ServerService : Service() {
                 null
             }
             if (liveScanCapabilities != null) {
-                LocalEsclServer(
-                    port = ESCL_PORT,
-                    makeAndModel = caps.makeAndModel,
-                    capabilities = liveScanCapabilities,
-                    spoolDir = spoolDir,
-                    performScan = { resolution, colorMode, output ->
-                        ScanPipeline(scan).scan(output, resolution, colorMode)
-                    },
-                ).also { localEsclServer = it }.start(bindAddr)
+                // Starting the eSCL server (binding ESCL_PORT) is likewise isolated: a
+                // bind failure here (e.g. stale TIME_WAIT/address-in-use) must not take
+                // down the print pipeline that's already running above.
+                try {
+                    LocalEsclServer(
+                        port = ESCL_PORT,
+                        makeAndModel = caps.makeAndModel,
+                        capabilities = liveScanCapabilities,
+                        spoolDir = spoolDir,
+                        performScan = { resolution, colorMode, output ->
+                            ScanPipeline(scan).scan(output, resolution, colorMode)
+                        },
+                    ).also { localEsclServer = it }.start(bindAddr)
+                } catch (e: Exception) {
+                    Log.w(TAG, "eSCL server start failed, scan server not started: ${e.message}")
+                    localEsclServer = null
+                    liveScanCapabilities = null
+                }
             }
         }
 
