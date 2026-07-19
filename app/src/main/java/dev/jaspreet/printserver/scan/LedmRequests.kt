@@ -49,6 +49,7 @@ object LedmRequests {
         width: Int,
         yStart: Int,
         height: Int,
+        colorSpace: String,
     ): String =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
             "<ScanSettings xmlns=\"http://www.hp.com/schemas/imaging/con/cnx/scan/2008/08/19\">" +
@@ -60,7 +61,7 @@ object LedmRequests {
             "<Height>$height</Height>" +
             "<Format>Jpeg</Format>" +
             "<CompressionQFactor>15</CompressionQFactor>" +
-            "<ColorSpace>Color</ColorSpace>" +
+            "<ColorSpace>$colorSpace</ColorSpace>" +
             "<BitDepth>8</BitDepth>" +
             "<InputSource>Platen</InputSource>" +
             "<InputSourceType>Platen</InputSourceType>" +

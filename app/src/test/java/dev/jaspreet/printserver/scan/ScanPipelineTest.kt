@@ -3,6 +3,7 @@ package dev.jaspreet.printserver.scan
 import dev.jaspreet.printserver.usb.FakePrinterTransport
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 import kotlin.io.path.createTempFile
@@ -120,5 +121,38 @@ class ScanPipelineTest {
         assertThrows(IOException::class.java) {
             ScanPipeline(transport, pollDelayMs = 0, maxPolls = 3).scan(output)
         }
+    }
+
+    @Test
+    fun `passes the requested resolution and grayscale color space into the create-job request`() {
+        var capturedJobBody = ""
+        val fakeJpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01, 0xFF.toByte(), 0xD9.toByte())
+        val transport = FakePrinterTransport { reqBytes ->
+            val req = String(reqBytes, Charsets.US_ASCII)
+            when {
+                req.startsWith("GET /Scan/Status") ->
+                    chunkedResponse("200 OK", body = "<ScannerStatus><ScannerState>Idle</ScannerState></ScannerStatus>")
+                req.startsWith("POST /Scan/Jobs") -> {
+                    capturedJobBody = req.substringAfter("\r\n\r\n")
+                    chunkedResponse("201 Created", extraHeaders = "Location: /Scan/Jobs/JobList/1\r\n", body = "")
+                }
+                req.startsWith("GET /Scan/Jobs/JobList/1 ") ->
+                    chunkedResponse(
+                        "200 OK",
+                        body = "<PreScanPage><PageState>ReadyToUpload</PageState>" +
+                            "<BinaryURL>/Scan/Jobs/JobList/1/Pages/1/Image</BinaryURL></PreScanPage>",
+                    )
+                req.startsWith("GET /Scan/Jobs/JobList/1/Pages/1/Image") ->
+                    binaryChunkedResponse("200 OK", fakeJpeg)
+                else -> throw IOException("unexpected request: $req")
+            }
+        }
+
+        val output = createTempFile().toFile()
+        ScanPipeline(transport, pollDelayMs = 0).scan(output, resolution = 600, colorMode = ScanColorMode.GRAYSCALE)
+
+        assertTrue(capturedJobBody.contains("<XResolution>600</XResolution>"))
+        assertTrue(capturedJobBody.contains("<YResolution>600</YResolution>"))
+        assertTrue(capturedJobBody.contains("<ColorSpace>Gray</ColorSpace>"))
     }
 }

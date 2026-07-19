@@ -24,15 +24,19 @@ class ScanPipeline(
         private const val READ_CHUNK = 16384
     }
 
-    fun scan(output: File) {
+    fun scan(output: File, resolution: Int = DEFAULT_RESOLUTION, colorMode: ScanColorMode = ScanColorMode.COLOR) {
         val statusReader = send(LedmRequests.statusRequest(host))
         ChunkedHttp.readHeader(statusReader)
         val statusBody = String(ChunkedHttp.readChunkedBody(statusReader), Charsets.US_ASCII)
         val state = LedmResponses.parseScannerState(statusBody)
         if (state != ScannerState.IDLE) throw IOException("Scanner not idle: $state")
 
+        val colorSpace = when (colorMode) {
+            ScanColorMode.COLOR -> "Color"
+            ScanColorMode.GRAYSCALE -> "Gray"
+        }
         val jobBody = LedmRequests.createJobBody(
-            DEFAULT_RESOLUTION, DEFAULT_RESOLUTION, 0, DEFAULT_WIDTH, 0, DEFAULT_HEIGHT,
+            resolution, resolution, 0, DEFAULT_WIDTH, 0, DEFAULT_HEIGHT, colorSpace,
         )
         val jobBodyBytes = jobBody.toByteArray(Charsets.UTF_8)
         val footerBytes = LedmRequests.ZERO_FOOTER.toByteArray(Charsets.UTF_8)

@@ -38,6 +38,7 @@ class LedmRequestsTest {
         val body = LedmRequests.createJobBody(
             xResolution = 300, yResolution = 300,
             xStart = 0, width = 2550, yStart = 0, height = 3300,
+            colorSpace = "Color",
         )
         assertTrue(body.startsWith("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"))
         assertTrue(body.contains("<XResolution>300</XResolution>"))
@@ -50,6 +51,16 @@ class LedmRequestsTest {
         assertTrue(body.contains("<ColorSpace>Color</ColorSpace>"))
         assertTrue(body.contains("<InputSource>Platen</InputSource>"))
         assertTrue(body.endsWith("</ScanSettings>"))
+    }
+
+    @Test
+    fun `builds the create-job XML body with grayscale color space`() {
+        val body = LedmRequests.createJobBody(
+            xResolution = 300, yResolution = 300,
+            xStart = 0, width = 2550, yStart = 0, height = 3300,
+            colorSpace = "Gray",
+        )
+        assertTrue(body.contains("<ColorSpace>Gray</ColorSpace>"))
     }
 
     @Test
