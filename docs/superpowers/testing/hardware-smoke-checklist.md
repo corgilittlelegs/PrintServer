@@ -80,3 +80,20 @@ Then the physical print checks:
 - [ ] Cancel a queued (not yet printing) job from the client — it never prints;
       canceling an already-processing job gets a clear rejection, not a hang.
 - [ ] Raw 9100 path still works from a PC with the HP driver installed.
+
+## eSCL scan server (Spec B)
+
+Prereq: DeskJet 2300-series MFP connected via OTG, server running, a physical page on
+the flatbed before each scan check below.
+
+- [ ] macOS: `dns-sd -B _uscan._tcp` lists the scanner within ~5 s.
+- [ ] macOS: Image Capture (or Preview's Import from Scanner) discovers the scanner and
+      shows its capabilities (resolution/color options) without a driver install.
+- [ ] Scan one page at the default settings — output is a valid, correctly-oriented JPEG.
+- [ ] Scan at 600dpi if offered — output is visibly higher-resolution than the 300dpi scan.
+- [ ] Scan in grayscale — output is genuinely grayscale, not color.
+- [ ] Start a scan from one client, then attempt a second scan from another client before
+      the first completes — second attempt is rejected/queued sanely, doesn't crash or
+      hang the app.
+- [ ] Stop and restart the server — scanner disappears from `dns-sd -B _uscan._tcp` and
+      reappears within ~5 s of restart.
