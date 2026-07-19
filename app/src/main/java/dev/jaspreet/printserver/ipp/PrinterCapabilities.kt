@@ -114,7 +114,7 @@ class PrinterCapabilities(
         // Bonjour _ipp._tcp service as AirPrint-capable using this TXT key alone, before
         // it ever opens an IPP connection — omit it and the printer shows up as an
         // unclassified generic Bonjour service instead.
-        private val URF_TOKENS = listOf("V1.4", "CP1", "PQ4", "RS300", "W8", "SRGB24")
+        private val URF_TOKENS = listOf("V1.4", "CP1", "PQ3-4-5", "RS300", "W8", "SRGB24")
 
         fun deskJet2300(printerUri: URI, uuid: UUID = STABLE_UUID): PrinterCapabilities =
             PrinterCapabilities(
