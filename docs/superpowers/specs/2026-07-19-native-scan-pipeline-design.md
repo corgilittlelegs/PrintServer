@@ -142,6 +142,18 @@ devices) gave the exact wire format, reproduced below.
    not raw PNM — see "Output format" note below, this supersedes Revision 1's PNM choice).
 8. Close the USB connection.
 
+### Response framing: real HTTP/1.1 chunked transfer encoding
+
+Confirmed by reading `http.c`'s `http_read_header`/`http_read_payload`: every response
+(status check, create-job, poll, binary-fetch) is genuinely HTTP/1.1 — a status line, then
+headers until a blank line, then a **chunked-encoded body**: a hex chunk-length line, that
+many raw bytes, a trailing CRLF, repeated, terminated by a zero-length chunk (`0\r\n\r\n`).
+This holds even for the large binary-fetch response, so pulling the scanned JPEG out
+requires a real chunked decoder, not a fixed-size or Content-Length-based read — the
+implementation must decode chunk-by-chunk. This is a standard, well-defined format
+(RFC 7230 §4.1) and the decoding logic itself needs no hardware to test: given a captured
+byte sequence, decoding is a pure function.
+
 ### Output format (supersedes Revision 1)
 
 Revision 1 chose PNM to match the print pipeline's existing `PpmImage` code. That reasoning
@@ -161,13 +173,15 @@ Kotlin:
   out. No I/O.
 - `LedmResponses.kt` — pure functions parsing the exact response shapes above:
   `parseScannerState(String): ScannerState` (enum: IDLE, BUSY), `parseLocationHeader(String): String?`,
-  `parsePollResult(String): PollResult` (sealed type: `PageReady(binaryUrl: String)`,
-  `Completed`, `Canceled`, `NoDocument`), and a way to split a raw HTTP response into
-  header text + body bytes (needed for step 7, where the body is binary JPEG, not text).
-  No I/O.
+  `parsePollResponse(String): PollResult` (sealed type: `PageReady(binaryUrl: String)`,
+  `Completed`, `Canceled`, `NoDocument`, `StillWaiting`). No I/O.
+- `ChunkedHttp.kt` — a pure chunked-transfer-encoding decoder (RFC 7230 §4.1): given the
+  bytes of a response body already read off the wire, decodes the hex-length/data/CRLF
+  chunk sequence into the real payload bytes. No I/O — the loop that actually pulls more
+  bytes off `UsbTransport` as needed lives in `ScanPipeline`, calling into this decoder.
 - `ScanPipeline.kt` — orchestrates: opens the USB connection via the existing
   `UsbTransport` interface, drives the request/response sequence above using the pure
-  functions from the two files above, writes the final JPEG bytes to a `File`. This is
+  functions from the three files above, writes the final JPEG bytes to a `File`. This is
   the only piece that touches real I/O, mirroring how `NativeRenderingPipeline` is a thin
   orchestration layer around pure `HpcupsNative` calls.
 - `UsbScanTransport` — none needed as a *separate* class: the existing `UsbTransport`
