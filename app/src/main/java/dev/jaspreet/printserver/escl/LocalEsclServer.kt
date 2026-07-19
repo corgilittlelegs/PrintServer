@@ -212,7 +212,14 @@ class LocalEsclServer(
     private fun handleDeleteJob(cout: BufferedOutputStream, path: String) {
         val id = path.removePrefix("/eSCL/ScanJobs/")
         val job = currentJob.get()
-        if (job?.id == id) currentJob.compareAndSet(job, null)
+        // Only release the slot here if the job is already terminal. While it's still
+        // PROCESSING, performScan is actively running on a background thread against the
+        // single shared UsbTransport -- clearing currentJob now would let a subsequent POST
+        // start a second concurrent performScan call, interleaving USB bulk pipe HTTP
+        // framing between the two scans. The async completion block in handleCreateJob's
+        // finally is the sole rightful owner of releasing the slot for a job that's still
+        // processing; DELETE just removes the map entry / spooled file below.
+        if (job?.id == id && job.state != EsclJobState.PROCESSING) currentJob.compareAndSet(job, null)
         // The job may already have left currentJob (a completed job clears its own slot
         // in handleCreateJob's executor block) by the time DELETE arrives, so look up its
         // output file via the jobs map -- which, unlike currentJob, isn't cleared on

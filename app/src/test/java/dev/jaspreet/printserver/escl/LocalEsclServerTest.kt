@@ -134,6 +134,35 @@ class LocalEsclServerTest {
     }
 
     @Test
+    fun `DELETE of an in-flight job does not free the scanner slot while it is still processing`() {
+        val holdLatch = CountDownLatch(1)
+        val releaseLatch = CountDownLatch(1)
+        val port = start(onScan = { _, _, output ->
+            holdLatch.countDown()
+            releaseLatch.await(5, TimeUnit.SECONDS)
+            output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte()))
+        })
+        val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+        assertTrue(holdLatch.await(5, TimeUnit.SECONDS))
+
+        // A real eSCL client (sane-airscan, Apple Image Capture) may send DELETE to cancel
+        // an in-progress scan, not just after fetching a completed one. That must not
+        // advertise the scanner as free while performScan is still actively running on the
+        // shared UsbTransport -- otherwise a second POST landing right after would start a
+        // second concurrent performScan call and corrupt both scans' USB framing.
+        val deleteStatus = httpDelete(port, location)
+        assertEquals(200, deleteStatus)
+
+        val (secondStatus, _) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+        assertEquals(
+            "second POST must still be rejected -- the in-flight job's slot must not have been freed by DELETE",
+            503,
+            secondStatus,
+        )
+        releaseLatch.countDown()
+    }
+
+    @Test
     fun `DELETE removes the spooled output file from disk`() {
         val port = start(onScan = { _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01)) })
         val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
