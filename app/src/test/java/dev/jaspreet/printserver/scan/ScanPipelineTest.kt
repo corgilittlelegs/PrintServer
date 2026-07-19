@@ -154,5 +154,10 @@ class ScanPipelineTest {
         assertTrue(capturedJobBody.contains("<XResolution>600</XResolution>"))
         assertTrue(capturedJobBody.contains("<YResolution>600</YResolution>"))
         assertTrue(capturedJobBody.contains("<ColorSpace>Gray</ColorSpace>"))
+        // Width/Height are pixel counts at the requested resolution, not a fixed
+        // resolution-independent page size -- at 600dpi (2x the 300dpi baseline) the
+        // full US-Letter region must scale to 5100x6600, not stay at 2550x3300.
+        assertTrue(capturedJobBody.contains("<Width>5100</Width>"))
+        assertTrue(capturedJobBody.contains("<Height>6600</Height>"))
     }
 }

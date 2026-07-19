@@ -35,8 +35,13 @@ class ScanPipeline(
             ScanColorMode.COLOR -> "Color"
             ScanColorMode.GRAYSCALE -> "Gray"
         }
+        // Width/Height are pixel counts at the request's XResolution/YResolution, not a
+        // resolution-independent physical size, so the 300dpi-baseline defaults above must
+        // be scaled to the actually-requested resolution to keep capturing the full page.
+        val width = DEFAULT_WIDTH * resolution / DEFAULT_RESOLUTION
+        val height = DEFAULT_HEIGHT * resolution / DEFAULT_RESOLUTION
         val jobBody = LedmRequests.createJobBody(
-            resolution, resolution, 0, DEFAULT_WIDTH, 0, DEFAULT_HEIGHT, colorSpace,
+            resolution, resolution, 0, width, 0, height, colorSpace,
         )
         val jobBodyBytes = jobBody.toByteArray(Charsets.UTF_8)
         val footerBytes = LedmRequests.ZERO_FOOTER.toByteArray(Charsets.UTF_8)
