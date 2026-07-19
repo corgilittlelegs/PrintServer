@@ -236,7 +236,12 @@ class ServerService : Service() {
         // failed capability query just means this printer doesn't support (or we can't
         // yet drive) scanning -- the print pipeline above must not be affected.
         var liveScanCapabilities: dev.jaspreet.printserver.scan.ScannerCapabilities? = null
-        val scan = usb.openScanTransport(device)
+        val scan = try {
+            usb.openScanTransport(device)
+        } catch (e: Exception) {
+            Log.w(TAG, "Scan transport open failed, scan server not started: ${e.message}")
+            null
+        }
         if (scan != null) {
             scanTransport = scan
             liveScanCapabilities = try {
