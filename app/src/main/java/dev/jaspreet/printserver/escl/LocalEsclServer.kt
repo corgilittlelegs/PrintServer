@@ -11,13 +11,29 @@ import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
+/** Internal job lifecycle state -- kept as a real enum (unlike the wire-facing
+ *  [EsclJobInfo.state] String) so the three states are compiler-checked wherever they're
+ *  compared, matching this codebase's [dev.jaspreet.printserver.jobs.JobState] convention. */
+private enum class EsclJobState {
+    PROCESSING,
+    COMPLETED,
+    ABORTED,
+}
+
+private fun EsclJobState.toWireString(): String = when (this) {
+    EsclJobState.PROCESSING -> "Processing"
+    EsclJobState.COMPLETED -> "Completed"
+    EsclJobState.ABORTED -> "Aborted"
+}
+
 private class EsclJob(val id: String, val outputFile: File) {
-    @Volatile var state: String = "Processing" // "Processing" | "Completed" | "Aborted"
+    @Volatile var state: EsclJobState = EsclJobState.PROCESSING
 }
 
 /**
@@ -46,6 +62,16 @@ class LocalEsclServer(
     private val clientSlots = Semaphore(maxConcurrentClients)
     private val currentJob = AtomicReference<EsclJob?>(null)
     private val nextJobId = AtomicInteger(1)
+
+    // currentJob is cleared (set back to null) as soon as a scan finishes, whether it
+    // succeeded or failed -- that's what lets a new POST start immediately after. But
+    // NextDocument/DELETE requests for that job typically arrive *after* it's cleared (the
+    // client polls ScannerStatus until it's no longer Processing, then fetches), so its
+    // terminal state and output file must stay reachable independent of currentJob. This
+    // map is the source of truth for both; entries are removed on DELETE, which every real
+    // eSCL client issues after a successful fetch, keeping it from growing unbounded in
+    // normal use.
+    private val jobs = ConcurrentHashMap<String, EsclJob>()
 
     val actualPort: Int get() = serverSocket?.localPort ?: port
 
@@ -109,12 +135,13 @@ class LocalEsclServer(
             respond(cout, 503, "text/plain", "Scanner busy")
             return
         }
+        jobs[id] = job
         executor.execute {
             try {
                 performScan(resolution, colorMode, output)
-                job.state = "Completed"
+                job.state = EsclJobState.COMPLETED
             } catch (e: Exception) {
-                job.state = "Aborted"
+                job.state = EsclJobState.ABORTED
             } finally {
                 currentJob.compareAndSet(job, null)
             }
@@ -124,24 +151,47 @@ class LocalEsclServer(
 
     private fun handleNextDocument(cout: BufferedOutputStream, path: String) {
         val id = path.removePrefix("/eSCL/ScanJobs/").removeSuffix("/NextDocument")
-        val job = currentJob.get()
-        val output = if (job?.id == id) job.outputFile else File(spoolDir, "escl-job-$id.jpg")
-        if (!output.exists() || (job != null && job.id == id && job.state == "Processing")) {
+        val job = jobs[id]
+        // A known job that isn't COMPLETED must never be served -- Processing means no
+        // bytes are ready yet, and Aborted means whatever bytes made it to disk may be a
+        // partial/corrupt write from a failure mid-scan (e.g. a USB write error). Gating
+        // positively on COMPLETED (rather than just excluding Processing) is what keeps an
+        // Aborted job's partial output from ever going out as a client-visible 200.
+        if (job == null) {
             respond(cout, 404, "text/plain", "Not ready")
             return
         }
-        respondWithHeaders(cout, 200, "image/jpeg", "", emptyMap(), bodyBytes = output.readBytes())
+        if (job.state != EsclJobState.COMPLETED) {
+            val status = if (job.state == EsclJobState.ABORTED) 500 else 404
+            respond(cout, status, "text/plain", "Not ready")
+            return
+        }
+        if (!job.outputFile.exists()) {
+            respond(cout, 404, "text/plain", "Not ready")
+            return
+        }
+        respondWithHeaders(cout, 200, "image/jpeg", "", emptyMap(), bodyBytes = job.outputFile.readBytes())
     }
 
     private fun handleDeleteJob(cout: BufferedOutputStream, path: String) {
         val id = path.removePrefix("/eSCL/ScanJobs/")
         val job = currentJob.get()
         if (job?.id == id) currentJob.compareAndSet(job, null)
+        // The job may already have left currentJob (a completed job clears its own slot
+        // in handleCreateJob's executor block) by the time DELETE arrives, so look up its
+        // output file via the jobs map -- which, unlike currentJob, isn't cleared on
+        // completion -- rather than relying on a still-live EsclJob reference. Without
+        // this, every completed scan's spooled JPEG is left on disk forever -- see
+        // jobs/JobQueue.kt for the established convention of deleting spool files once a
+        // job is terminal.
+        val trackedJob = jobs.remove(id)
+        val output = trackedJob?.outputFile ?: File(spoolDir, "escl-job-$id.jpg")
+        if (output.exists()) output.delete()
         respond(cout, 200, "text/plain", "")
     }
 
     private fun currentJobInfo(): List<EsclJobInfo> =
-        currentJob.get()?.let { listOf(EsclJobInfo(it.id, it.state)) } ?: emptyList()
+        currentJob.get()?.let { listOf(EsclJobInfo(it.id, it.state.toWireString())) } ?: emptyList()
 
     private fun parseStartLine(startLine: String): Pair<String, String>? {
         val parts = startLine.split(" ")
@@ -162,7 +212,7 @@ class LocalEsclServer(
     ) {
         val statusText = when (status) {
             200 -> "OK"; 201 -> "Created"; 400 -> "Bad Request"
-            404 -> "Not Found"; 503 -> "Service Unavailable"; else -> "Error"
+            404 -> "Not Found"; 500 -> "Internal Server Error"; 503 -> "Service Unavailable"; else -> "Error"
         }
         val headers = buildString {
             append("HTTP/1.1 $status $statusText\r\n")

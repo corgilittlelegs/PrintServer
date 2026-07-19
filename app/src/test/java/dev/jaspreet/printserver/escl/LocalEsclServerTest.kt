@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit
 
 class LocalEsclServerTest {
     private var server: LocalEsclServer? = null
+    lateinit var spoolDir: java.io.File
 
     @After
     fun tearDown() { server?.stop() }
@@ -27,9 +28,10 @@ class LocalEsclServerTest {
             output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x00, 0xFF.toByte(), 0xD9.toByte()))
         },
     ): Int {
+        spoolDir = createTempDir()
         val s = LocalEsclServer(
             port = 0, makeAndModel = "PrintServer Scanner", capabilities = capabilities,
-            spoolDir = createTempDir(), performScan = onScan,
+            spoolDir = spoolDir, performScan = onScan,
         )
         s.start(bindAddress = null)
         server = s
@@ -43,6 +45,14 @@ class LocalEsclServerTest {
             val status = text.substringAfter("HTTP/1.1 ").substringBefore(" ").trim().toInt()
             val body = text.substringAfter("\r\n\r\n")
             return status to body
+        }
+    }
+
+    private fun httpDelete(port: Int, path: String): Int {
+        Socket("127.0.0.1", port).use { socket ->
+            socket.getOutputStream().write("DELETE $path HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".toByteArray())
+            val text = BufferedReader(InputStreamReader(socket.getInputStream())).readText()
+            return text.substringAfter("HTTP/1.1 ").substringBefore(" ").trim().toInt()
         }
     }
 
@@ -121,5 +131,43 @@ class LocalEsclServerTest {
         val (secondStatus, _) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
         assertEquals(503, secondStatus)
         releaseLatch.countDown()
+    }
+
+    @Test
+    fun `DELETE removes the spooled output file from disk`() {
+        val port = start(onScan = { _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01)) })
+        val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+        var attempts = 20
+        while (attempts-- > 0) {
+            val (_, statusBody) = httpGet(port, "/eSCL/ScannerStatus")
+            if (!statusBody.contains("Processing")) break
+            Thread.sleep(50)
+        }
+        val jobId = location.substringAfterLast("/")
+        val output = java.io.File(spoolDir, "escl-job-$jobId.jpg")
+        assertTrue("spooled file should exist after scan completes", output.exists())
+
+        val deleteStatus = httpDelete(port, location)
+        assertEquals(200, deleteStatus)
+        assertTrue("spooled file should be deleted after DELETE", !output.exists())
+    }
+
+    @Test
+    fun `NextDocument does not serve a 200 for an aborted job's partial bytes`() {
+        val port = start(onScan = { _, _, output ->
+            // Simulate a partial/truncated write followed by a mid-scan failure, e.g. a
+            // USB write error -- the file exists on disk but the job is Aborted.
+            output.writeBytes(byteArrayOf(0xFF.toByte()))
+            throw java.io.IOException("simulated USB write failure")
+        })
+        val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+        var attempts = 20
+        while (attempts-- > 0) {
+            val (_, statusBody) = httpGet(port, "/eSCL/ScannerStatus")
+            if (!statusBody.contains("Processing")) break
+            Thread.sleep(50)
+        }
+        val (docStatus, _) = httpGet(port, "$location/NextDocument")
+        assertTrue("aborted job must not be served as a successful 200 scan", docStatus != 200)
     }
 }
