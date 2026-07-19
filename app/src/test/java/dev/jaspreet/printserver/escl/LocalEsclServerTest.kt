@@ -170,4 +170,54 @@ class LocalEsclServerTest {
         val (docStatus, _) = httpGet(port, "$location/NextDocument")
         assertTrue("aborted job must not be served as a successful 200 scan", docStatus != 200)
     }
+
+    @Test
+    fun `evicting a retained completed job deletes its spooled output file`() {
+        // The jobs map is capped at 200 retained (MAX_RETAINED_JOBS) so a client that
+        // never sends DELETE doesn't leak spooled files forever -- submit 201 scans
+        // sequentially (this server allows only one in flight at a time) and confirm
+        // the oldest job's output file is evicted from disk once the cap is exceeded.
+        val port = start(onScan = { _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte())) })
+
+        fun runOneScanToCompletion(): String {
+            // Retry on 503 rather than assuming the previous job's slot is already free --
+            // currentJob is only cleared once the prior job's bookkeeping (eviction/cleanup)
+            // has finished, so a POST landing right after a completion may still race it.
+            var location = ""
+            var postAttempts = 200
+            while (postAttempts-- > 0) {
+                val (status, loc) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+                if (status == 201) { location = loc; break }
+                Thread.sleep(20)
+            }
+            check(location.isNotEmpty()) { "scanner never became free for a new POST" }
+            var attempts = 200
+            while (attempts-- > 0) {
+                val (_, statusBody) = httpGet(port, "/eSCL/ScannerStatus")
+                if (!statusBody.contains("Processing")) break
+                Thread.sleep(20)
+            }
+            return location.substringAfterLast("/")
+        }
+
+        val firstJobId = runOneScanToCompletion()
+        val firstOutput = java.io.File(spoolDir, "escl-job-$firstJobId.jpg")
+        assertTrue("first job's spooled file should exist after its scan completes", firstOutput.exists())
+
+        repeat(200) { runOneScanToCompletion() }
+
+        // Eviction runs as part of the 201st job's own background completion bookkeeping,
+        // which can still be in flight for a moment after ScannerStatus already reports
+        // that job as no-longer-Processing (state flips to COMPLETED before the eviction
+        // step that follows it in the same finally block) -- so poll rather than assert
+        // immediately.
+        var attempts = 100
+        while (firstOutput.exists() && attempts-- > 0) {
+            Thread.sleep(20)
+        }
+        assertTrue(
+            "oldest job's spooled file should have been evicted from disk",
+            !firstOutput.exists(),
+        )
+    }
 }

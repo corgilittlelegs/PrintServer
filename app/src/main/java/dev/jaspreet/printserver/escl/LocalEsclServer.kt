@@ -69,8 +69,9 @@ class LocalEsclServer(
     // client polls ScannerStatus until it's no longer Processing, then fetches), so its
     // terminal state and output file must stay reachable independent of currentJob. This
     // map is the source of truth for both; entries are removed on DELETE, which every real
-    // eSCL client issues after a successful fetch, keeping it from growing unbounded in
-    // normal use.
+    // eSCL client issues after a successful fetch. A non-compliant or crashed client that
+    // never sends DELETE would otherwise grow this map forever -- evictOldTerminalJobs()
+    // bounds it at MAX_RETAINED_JOBS, matching JobQueue's convention.
     private val jobs = ConcurrentHashMap<String, EsclJob>()
 
     val actualPort: Int get() = serverSocket?.localPort ?: port
@@ -143,10 +144,45 @@ class LocalEsclServer(
             } catch (e: Exception) {
                 job.state = EsclJobState.ABORTED
             } finally {
+                // Finish all bookkeeping (eviction / orphan cleanup) *before* clearing
+                // currentJob, since that's the signal that lets a new POST start --
+                // otherwise a fresh scan could begin while this job's cleanup is still
+                // in flight.
+                if (jobs.containsKey(job.id)) {
+                    evictOldTerminalJobs()
+                } else {
+                    // DELETE already ran for this job while the scan was still
+                    // PROCESSING -- it removed the job from `jobs` and deleted
+                    // whatever (if anything) existed on disk at that moment. The
+                    // performScan call above may have just written bytes to `output`
+                    // *after* that, which would otherwise resurrect an orphaned,
+                    // untracked file. Delete it again rather than leaving it behind.
+                    output.delete()
+                }
                 currentJob.compareAndSet(job, null)
             }
         }
         respondWithHeaders(cout, 201, "text/plain", "", mapOf("Location" to "/eSCL/ScanJobs/$id"))
+    }
+
+    /**
+     * Bounds the jobs map the same way JobQueue.evictOldTerminalJobs does: a client that
+     * never sends DELETE (crash, dropped Wi-Fi, non-compliant client) would otherwise grow
+     * this map -- and its spooled output files -- forever over a long-running session. Only
+     * terminal (COMPLETED/ABORTED) jobs are evicted, oldest first, matching the codebase's
+     * 200-retained DoS-hardening convention (see JobQueue, ActivityLog).
+     */
+    private fun evictOldTerminalJobs() {
+        val overflow = jobs.size - MAX_RETAINED_JOBS
+        if (overflow <= 0) return
+        jobs.values
+            .filter { it.state == EsclJobState.COMPLETED || it.state == EsclJobState.ABORTED }
+            .sortedBy { it.id.toInt() }
+            .take(overflow)
+            .forEach {
+                it.outputFile.delete()
+                jobs.remove(it.id)
+            }
     }
 
     private fun handleNextDocument(cout: BufferedOutputStream, path: String) {
@@ -230,5 +266,10 @@ class LocalEsclServer(
     fun stop() {
         try { serverSocket?.close() } catch (_: IOException) {}
         executor.shutdownNow()
+    }
+
+    companion object {
+        // Caps the jobs map (see evictOldTerminalJobs) -- mirrors JobQueue's/ActivityLog's 200-entry cap.
+        private const val MAX_RETAINED_JOBS = 200
     }
 }
