@@ -41,7 +41,10 @@ class QueueStateTest {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
         val blockingPipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
-            override fun render(document: File, output: File, format: String) {
+            override fun render(
+                document: File, output: File, format: String,
+                quality: PrintQuality, colorMode: ColorMode,
+            ) {
                 started.countDown()
                 release.await(5, TimeUnit.SECONDS)
                 output.writeBytes("X".toByteArray())
@@ -118,7 +121,10 @@ class QueueStateTest {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
         val blockingPipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
-            override fun render(document: File, output: File, format: String) {
+            override fun render(
+                document: File, output: File, format: String,
+                quality: PrintQuality, colorMode: ColorMode,
+            ) {
                 started.countDown()
                 release.await(5, TimeUnit.SECONDS)
                 output.writeBytes("X".toByteArray())

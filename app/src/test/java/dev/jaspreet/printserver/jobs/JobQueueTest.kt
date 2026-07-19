@@ -62,7 +62,10 @@ class JobQueueTest {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
         val blockingPipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
-            override fun render(document: File, output: File, format: String) {
+            override fun render(
+                document: File, output: File, format: String,
+                quality: PrintQuality, colorMode: ColorMode,
+            ) {
                 started.countDown()
                 release.await(5, TimeUnit.SECONDS)
                 output.writeBytes("X".toByteArray())
@@ -116,7 +119,10 @@ class JobQueueTest {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
         val blockingPipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
-            override fun render(document: File, output: File, format: String) {
+            override fun render(
+                document: File, output: File, format: String,
+                quality: PrintQuality, colorMode: ColorMode,
+            ) {
                 started.countDown()
                 release.await(5, TimeUnit.SECONDS)
                 output.writeBytes("X".toByteArray())
@@ -140,7 +146,10 @@ class JobQueueTest {
     fun `render timeout fires onJobStateChanged exactly once with ABORTED`() {
         val release = CountDownLatch(1)
         val blockingPipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
-            override fun render(document: File, output: File, format: String) {
+            override fun render(
+                document: File, output: File, format: String,
+                quality: PrintQuality, colorMode: ColorMode,
+            ) {
                 release.await(5, TimeUnit.SECONDS)
                 output.writeBytes("X".toByteArray())
             }
@@ -185,7 +194,10 @@ class JobQueueTest {
     fun `retry copies the original spool bytes into a new file and reruns it`() {
         var failNext = true
         val pipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
-            override fun render(document: File, output: File, format: String) {
+            override fun render(
+                document: File, output: File, format: String,
+                quality: PrintQuality, colorMode: ColorMode,
+            ) {
                 if (failNext) throw IOException("bad pdf")
                 output.writeBytes(document.readBytes())
             }
@@ -252,7 +264,10 @@ class JobQueueTest {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
         val blockingPipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
-            override fun render(document: File, output: File, format: String) {
+            override fun render(
+                document: File, output: File, format: String,
+                quality: PrintQuality, colorMode: ColorMode,
+            ) {
                 started.countDown()
                 release.await(5, TimeUnit.SECONDS)
                 output.writeBytes("X".toByteArray())

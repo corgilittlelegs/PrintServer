@@ -148,7 +148,10 @@ class LocalIppServerTest {
         val firstStarted = java.util.concurrent.CountDownLatch(1)
         val release = java.util.concurrent.CountDownLatch(1)
         val blockOnFirst = object : dev.jaspreet.printserver.render.RenderingPipeline {
-            override fun render(document: File, output: File, format: String) {
+            override fun render(
+                document: File, output: File, format: String,
+                quality: dev.jaspreet.printserver.jobs.PrintQuality, colorMode: dev.jaspreet.printserver.jobs.ColorMode,
+            ) {
                 firstStarted.countDown()
                 release.await()
             }
@@ -196,7 +199,10 @@ class LocalIppServerTest {
         val firstStarted = java.util.concurrent.CountDownLatch(1)
         val release = java.util.concurrent.CountDownLatch(1)
         val blockOnFirst = object : dev.jaspreet.printserver.render.RenderingPipeline {
-            override fun render(document: File, output: File, format: String) {
+            override fun render(
+                document: File, output: File, format: String,
+                quality: dev.jaspreet.printserver.jobs.PrintQuality, colorMode: dev.jaspreet.printserver.jobs.ColorMode,
+            ) {
                 firstStarted.countDown()
                 release.await()
             }
