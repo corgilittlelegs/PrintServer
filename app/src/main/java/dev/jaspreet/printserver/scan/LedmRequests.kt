@@ -19,8 +19,8 @@ object LedmRequests {
             "Accept-Charset:utf-8\r\n" +
             "Keep-Alive: 20\r\n" +
             "Proxy-Connection: keep-alive\r\n" +
-            "Cookie: AccessCounter=new\r\n" +
-            "0\r\n\r\n"
+            "Cookie: AccessCounter=new" +
+            ZERO_FOOTER
 
     /** [contentLength] must be the create-job XML body's byte length plus [ZERO_FOOTER]'s
      *  byte length -- this mirrors bb_ledm.c's own (unusual, but firmware-required)
@@ -82,6 +82,6 @@ object LedmRequests {
             "X-Requested-With: XMLHttpRequest\r\n" +
             "Keep-Alive: 300\r\n" +
             "Proxy-Connection: keep-alive\r\n" +
-            "Cookie: AccessCounter=new\r\n" +
-            "0\r\n\r\n"
+            "Cookie: AccessCounter=new" +
+            ZERO_FOOTER
 }
