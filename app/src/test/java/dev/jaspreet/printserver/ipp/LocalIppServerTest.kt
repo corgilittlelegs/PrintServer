@@ -34,11 +34,13 @@ class LocalIppServerTest {
         queue?.shutdown()
     }
 
-    private fun start(pipeline: dev.jaspreet.printserver.render.RenderingPipeline = FakeRenderingPipeline()): Int {
+    private fun start(
+        pipeline: dev.jaspreet.printserver.render.RenderingPipeline = FakeRenderingPipeline(),
+        capabilities: PrinterCapabilities = PrinterCapabilities.deskJet2300(URI.create("ipp://127.0.0.1:0/ipp/print")),
+    ): Int {
         val q = JobQueue(pipeline, { FakePrinterTransport { ByteArray(0) } })
         queue = q
-        val caps = PrinterCapabilities.deskJet2300(URI.create("ipp://127.0.0.1:0/ipp/print"))
-        val s = LocalIppServer(port = 0, capabilities = caps, jobQueue = q, spoolDir = createTempDir())
+        val s = LocalIppServer(port = 0, capabilities = capabilities, jobQueue = q, spoolDir = createTempDir())
         s.start(bindAddress = null)
         server = s
         return s.actualPort
@@ -230,5 +232,67 @@ class LocalIppServerTest {
             "this document is definitely over sixteen bytes".toByteArray(),
         )
         assertEquals(Status.clientErrorRequestEntityTooLarge, resp.status)
+    }
+
+    @Test
+    fun `print-job resolves print-quality and print-color-mode from the request`() {
+        val port = start()
+        val request = IppPacket(
+            Operation.printJob, 30,
+            operationGroup(),
+            groupOf(
+                Tag.jobAttributes,
+                Types.printQuality.of(com.hp.jipp.model.PrintQuality.high),
+                Types.printColorMode.of("monochrome"),
+            ),
+        )
+        val resp = ipp(port, request, "%PDF".toByteArray())
+        val jobId = resp[Tag.jobAttributes]!!.getValue(Types.jobId)!!
+        val job = queue!!.get(jobId)!!
+        assertEquals(dev.jaspreet.printserver.jobs.PrintQuality.HIGH, job.quality)
+        assertEquals(dev.jaspreet.printserver.jobs.ColorMode.MONOCHROME, job.colorMode)
+    }
+
+    @Test
+    fun `print-job defaults to NORMAL quality and the printer's default color when attrs are absent`() {
+        val port = start()
+        val resp = ipp(port, IppPacket(Operation.printJob, 31, operationGroup()), "%PDF".toByteArray())
+        val jobId = resp[Tag.jobAttributes]!!.getValue(Types.jobId)!!
+        val job = queue!!.get(jobId)!!
+        assertEquals(dev.jaspreet.printserver.jobs.PrintQuality.NORMAL, job.quality)
+        assertEquals(dev.jaspreet.printserver.jobs.ColorMode.COLOR, job.colorMode) // deskJet2300 supports color
+    }
+
+    @Test
+    fun `print-job clamps an unrecognized print-color-mode to the printer's default`() {
+        val port = start()
+        val request = IppPacket(
+            Operation.printJob, 32,
+            operationGroup(),
+            groupOf(Tag.jobAttributes, Types.printColorMode.of("sepia")),
+        )
+        val resp = ipp(port, request, "%PDF".toByteArray())
+        val jobId = resp[Tag.jobAttributes]!!.getValue(Types.jobId)!!
+        assertEquals(dev.jaspreet.printserver.jobs.ColorMode.COLOR, queue!!.get(jobId)!!.colorMode)
+    }
+
+    @Test
+    fun `print-job clamps a color request to monochrome on a monochrome-only printer`() {
+        val monoCaps = PrinterCapabilities(
+            makeAndModel = "Mono Test Printer",
+            formats = listOf("application/pdf"),
+            color = false,
+            printerUri = URI.create("ipp://127.0.0.1:0/ipp/print"),
+            uuid = java.util.UUID.randomUUID(),
+        )
+        val port = start(capabilities = monoCaps)
+        val request = IppPacket(
+            Operation.printJob, 33,
+            operationGroup(),
+            groupOf(Tag.jobAttributes, Types.printColorMode.of("color")),
+        )
+        val resp = ipp(port, request, "%PDF".toByteArray())
+        val jobId = resp[Tag.jobAttributes]!!.getValue(Types.jobId)!!
+        assertEquals(dev.jaspreet.printserver.jobs.ColorMode.MONOCHROME, queue!!.get(jobId)!!.colorMode)
     }
 }

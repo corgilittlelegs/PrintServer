@@ -13,8 +13,10 @@ import com.hp.jipp.model.Types
 import dev.jaspreet.printserver.http.BodyReader
 import dev.jaspreet.printserver.http.BodyTooLargeException
 import dev.jaspreet.printserver.http.HttpHead
+import dev.jaspreet.printserver.jobs.ColorMode
 import dev.jaspreet.printserver.jobs.JobQueue
 import dev.jaspreet.printserver.jobs.JobState
+import dev.jaspreet.printserver.jobs.PrintQuality
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayInputStream
@@ -147,7 +149,7 @@ class LocalIppServer(
         val spool = File.createTempFile("job", spoolExtension(format), spoolDir)
         spool.writeBytes(document)
         val name = request[Tag.operationAttributes]?.getValue(Types.jobName)?.value ?: "untitled"
-        val jobId = jobQueue.submit(spool, name, format, clientAddress)
+        val jobId = jobQueue.submit(spool, name, format, clientAddress, resolveQuality(request), resolveColorMode(request))
         // Report the queue's real state — submit() only enqueues, it does not
         // guarantee the worker has started (previously this hardcoded "processing").
         val actualState = jobQueue.get(jobId)?.state ?: JobState.PENDING
@@ -174,7 +176,7 @@ class LocalIppServer(
         spoolDir.mkdirs()
         val spool = File.createTempFile("job", spoolExtension(format), spoolDir)
         val name = request[Tag.operationAttributes]?.getValue(Types.jobName)?.value ?: "untitled"
-        val jobId = jobQueue.reserve(spool, name, format, clientAddress)
+        val jobId = jobQueue.reserve(spool, name, format, clientAddress, resolveQuality(request), resolveColorMode(request))
         return IppPacket(
             Status.successfulOk, request.requestId,
             operationGroup(),
@@ -293,6 +295,32 @@ class LocalIppServer(
 
     private fun documentFormat(request: IppPacket): String =
         request[Tag.operationAttributes]?.getValue(Types.documentFormat) ?: "application/pdf"
+
+    /** job-template attributes can legally arrive in either the job-attributes group
+     *  (per RFC 8011) or the operation-attributes group — real clients aren't fully
+     *  consistent here (jobName above is already read from operation-attributes for
+     *  the same reason), so check both. */
+    private fun <T : Any> IppPacket.jobTemplateValue(type: com.hp.jipp.encoding.AttributeType<T>): T? =
+        this[Tag.jobAttributes]?.getValue(type) ?: this[Tag.operationAttributes]?.getValue(type)
+
+    /** Missing or unsupported print-quality clamps to NORMAL — same silent-default
+     *  pattern documentFormat() already uses for an unrecognized document format. */
+    private fun resolveQuality(request: IppPacket): PrintQuality = when (request.jobTemplateValue(Types.printQuality)) {
+        com.hp.jipp.model.PrintQuality.draft -> PrintQuality.DRAFT
+        com.hp.jipp.model.PrintQuality.high -> PrintQuality.HIGH
+        else -> PrintQuality.NORMAL
+    }
+
+    /** Missing/unrecognized print-color-mode, or "color" requested on a monochrome-only
+     *  printer, clamps to the printer's actual default color mode. */
+    private fun resolveColorMode(request: IppPacket): ColorMode {
+        val requested = request.jobTemplateValue(Types.printColorMode)
+        return when {
+            requested == "monochrome" -> ColorMode.MONOCHROME
+            requested == "color" && capabilities.color -> ColorMode.COLOR
+            else -> if (capabilities.color) ColorMode.COLOR else ColorMode.MONOCHROME
+        }
+    }
 
     private fun spoolExtension(format: String): String = when (format) {
         "image/jpeg" -> ".jpg"
