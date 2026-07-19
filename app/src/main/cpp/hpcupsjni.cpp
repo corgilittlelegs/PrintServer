@@ -22,13 +22,13 @@ struct RasterFeed {
     unsigned width, height, dpi;
 };
 
-static int run_hpcups(int inputFd, int outputFd, const char *ppd) {
+static int run_hpcups(int inputFd, int outputFd, const char *ppd, const char *options) {
     setenv("PPD", ppd, 1);
     g_hpcups_input_fd = inputFd;
     g_hpcups_output_fd = outputFd;
 
     char *argv[] = { (char *)"hpcups", (char *)"1", (char *)"android",
-                     (char *)"printserver", (char *)"1", (char *)"", NULL };
+                     (char *)"printserver", (char *)"1", (char *)options, NULL };
     return hpcups_main(6, argv);
 }
 
@@ -78,10 +78,11 @@ extern "C" JNIEXPORT jint JNICALL
 Java_dev_jaspreet_printserver_render_HpcupsNative_encode(
     JNIEnv *env, jobject thiz,
     jbyteArray jrgb, jint width, jint height, jint dpi,
-    jstring jppdPath, jstring joutPath) {
+    jstring jppdPath, jstring joutPath, jstring joptions) {
 
     const char *ppd = env->GetStringUTFChars(jppdPath, NULL);
     const char *outPath = env->GetStringUTFChars(joutPath, NULL);
+    const char *options = env->GetStringUTFChars(joptions, NULL);
     jbyte *rgb = env->GetByteArrayElements(jrgb, NULL);
     int result = -1;
 
@@ -92,7 +93,7 @@ Java_dev_jaspreet_printserver_render_HpcupsNative_encode(
                             (unsigned)width, (unsigned)height, (unsigned)dpi };
         pthread_t writer;
         pthread_create(&writer, NULL, feed_raster, &feed);
-        result = run_hpcups(pipefd[0], outFd, ppd);
+        result = run_hpcups(pipefd[0], outFd, ppd, options);
 
         pthread_join(writer, NULL);
         close(pipefd[0]);
@@ -102,6 +103,7 @@ Java_dev_jaspreet_printserver_render_HpcupsNative_encode(
     env->ReleaseByteArrayElements(jrgb, rgb, JNI_ABORT);
     env->ReleaseStringUTFChars(jppdPath, ppd);
     env->ReleaseStringUTFChars(joutPath, outPath);
+    env->ReleaseStringUTFChars(joptions, options);
     return result;
 }
 
@@ -113,17 +115,18 @@ Java_dev_jaspreet_printserver_render_HpcupsNative_encode(
 extern "C" JNIEXPORT jint JNICALL
 Java_dev_jaspreet_printserver_render_HpcupsNative_encodeRaster(
     JNIEnv *env, jobject thiz,
-    jstring jinputPath, jstring jppdPath, jstring joutPath) {
+    jstring jinputPath, jstring jppdPath, jstring joutPath, jstring joptions) {
 
     const char *inputPath = env->GetStringUTFChars(jinputPath, NULL);
     const char *ppd = env->GetStringUTFChars(jppdPath, NULL);
     const char *outPath = env->GetStringUTFChars(joutPath, NULL);
+    const char *options = env->GetStringUTFChars(joptions, NULL);
     int result = -1;
 
     int inputFd = open(inputPath, O_RDONLY);
     int outFd = open(outPath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (inputFd >= 0 && outFd >= 0) {
-        result = run_hpcups(inputFd, outFd, ppd);
+        result = run_hpcups(inputFd, outFd, ppd, options);
     } else {
         LOGE("open failed for raster input=%s output=%s", inputPath, outPath);
     }
@@ -134,5 +137,6 @@ Java_dev_jaspreet_printserver_render_HpcupsNative_encodeRaster(
     env->ReleaseStringUTFChars(jinputPath, inputPath);
     env->ReleaseStringUTFChars(jppdPath, ppd);
     env->ReleaseStringUTFChars(joutPath, outPath);
+    env->ReleaseStringUTFChars(joptions, options);
     return result;
 }
