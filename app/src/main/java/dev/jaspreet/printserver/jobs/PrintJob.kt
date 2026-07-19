@@ -10,6 +10,8 @@ class PrintJob(
     val spoolFile: File,
     val format: String = "application/pdf",
     val clientAddress: String? = null,
+    val quality: PrintQuality = PrintQuality.NORMAL,
+    val colorMode: ColorMode = ColorMode.COLOR,
 ) {
     @Volatile var state: JobState = JobState.PENDING
     @Volatile var stateReason: String = "none"
