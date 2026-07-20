@@ -60,7 +60,6 @@ class ServerService : Service() {
     private var jobQueue: JobQueue? = null
     private var localIppServer: LocalIppServer? = null
     private var localEsclServer: LocalEsclServer? = null
-    private var scanTransport: UsbTransport? = null
     private val pipelineActive = AtomicBoolean(false)
     @Volatile private var servedDeviceId: Int? = null
 
@@ -248,32 +247,30 @@ class ServerService : Service() {
             null
         }
         if (liveScanCapabilities != null) {
-            val scan = try {
-                usb.openScanTransport(device)
+            // Starting the eSCL server (binding ESCL_PORT) is likewise isolated: a
+            // bind failure here (e.g. stale TIME_WAIT/address-in-use) must not take
+            // down the print pipeline that's already running above.
+            try {
+                LocalEsclServer(
+                    port = ESCL_PORT,
+                    makeAndModel = caps.makeAndModel,
+                    capabilities = liveScanCapabilities,
+                    spoolDir = spoolDir,
+                    performScan = { resolution, colorMode, output ->
+                        // ScanPipeline opens a fresh USB connection per request rather
+                        // than reusing one held open for the service's whole lifetime --
+                        // see ScanPipeline's class doc for why.
+                        val openScanTransport = {
+                            usb.openScanTransport(device)
+                                ?: throw java.io.IOException("Scan interface no longer available")
+                        }
+                        ScanPipeline(openScanTransport).scan(output, resolution, colorMode)
+                    },
+                ).also { localEsclServer = it }.start(bindAddr)
             } catch (e: Exception) {
-                Log.w(TAG, "Scan transport open failed, scan server not started: ${e.message}")
-                null
-            }
-            if (scan != null) {
-                scanTransport = scan
-                // Starting the eSCL server (binding ESCL_PORT) is likewise isolated: a
-                // bind failure here (e.g. stale TIME_WAIT/address-in-use) must not take
-                // down the print pipeline that's already running above.
-                try {
-                    LocalEsclServer(
-                        port = ESCL_PORT,
-                        makeAndModel = caps.makeAndModel,
-                        capabilities = liveScanCapabilities,
-                        spoolDir = spoolDir,
-                        performScan = { resolution, colorMode, output ->
-                            ScanPipeline(scan).scan(output, resolution, colorMode)
-                        },
-                    ).also { localEsclServer = it }.start(bindAddr)
-                } catch (e: Exception) {
-                    Log.w(TAG, "eSCL server start failed, scan server not started: ${e.message}")
-                    localEsclServer = null
-                    liveScanCapabilities = null
-                }
+                Log.w(TAG, "eSCL server start failed, scan server not started: ${e.message}")
+                localEsclServer = null
+                liveScanCapabilities = null
             }
         }
 
@@ -319,7 +316,6 @@ class ServerService : Service() {
         QueueState.detach()
         rawRelay?.stop(); rawRelay = null
         legacyTransport?.close(); legacyTransport = null
-        scanTransport?.close(); scanTransport = null
         pool?.closeAll(); pool = null
         servedDeviceId = null
         pipelineActive.set(false)

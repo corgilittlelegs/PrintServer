@@ -1,6 +1,7 @@
 package dev.jaspreet.printserver.scan
 
 import dev.jaspreet.printserver.usb.FakePrinterTransport
+import dev.jaspreet.printserver.usb.UsbTransport
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -9,6 +10,16 @@ import java.io.IOException
 import kotlin.io.path.createTempFile
 
 class ScanPipelineTest {
+
+    /** ScanPipeline now closes the transport it's given after each logical request
+     *  (matching HPLIP's own per-request USB connection lifecycle -- see ScanPipeline's
+     *  class doc). These tests script one [FakePrinterTransport] across the whole scan,
+     *  so this wraps it to no-op [close] rather than actually closing the shared fake. */
+    private class NonClosingTransport(private val delegate: UsbTransport) : UsbTransport {
+        override fun write(data: ByteArray, offset: Int, length: Int) = delegate.write(data, offset, length)
+        override fun read(buffer: ByteArray): Int = delegate.read(buffer)
+        override fun close() {}
+    }
 
     /** Wraps a text body in a full HTTP/1.1 chunked response, matching the real wire
      *  format the printer actually sends (status line, blank-line-terminated headers,
@@ -53,7 +64,7 @@ class ScanPipelineTest {
         }
 
         val output = createTempFile().toFile()
-        ScanPipeline(transport, pollDelayMs = 0).scan(output)
+        ScanPipeline({ NonClosingTransport(transport) }, pollDelayMs = 0).scan(output)
 
         assertArrayEquals(fakeJpeg, output.readBytes())
     }
@@ -64,7 +75,7 @@ class ScanPipelineTest {
             chunkedResponse("200 OK", body = "<ScannerStatus><ScannerState>BusyWithScanJob</ScannerState></ScannerStatus>")
         }
         val output = createTempFile().toFile()
-        assertThrows(IOException::class.java) { ScanPipeline(transport, pollDelayMs = 0).scan(output) }
+        assertThrows(IOException::class.java) { ScanPipeline({ NonClosingTransport(transport) }, pollDelayMs = 0).scan(output) }
     }
 
     @Test
@@ -82,7 +93,7 @@ class ScanPipelineTest {
             }
         }
         val output = createTempFile().toFile()
-        assertThrows(IOException::class.java) { ScanPipeline(transport, pollDelayMs = 0).scan(output) }
+        assertThrows(IOException::class.java) { ScanPipeline({ NonClosingTransport(transport) }, pollDelayMs = 0).scan(output) }
     }
 
     @Test
@@ -100,7 +111,7 @@ class ScanPipelineTest {
             }
         }
         val output = createTempFile().toFile()
-        assertThrows(IOException::class.java) { ScanPipeline(transport, pollDelayMs = 0).scan(output) }
+        assertThrows(IOException::class.java) { ScanPipeline({ NonClosingTransport(transport) }, pollDelayMs = 0).scan(output) }
     }
 
     @Test
@@ -119,7 +130,7 @@ class ScanPipelineTest {
         }
         val output = createTempFile().toFile()
         assertThrows(IOException::class.java) {
-            ScanPipeline(transport, pollDelayMs = 0, maxPolls = 3).scan(output)
+            ScanPipeline({ NonClosingTransport(transport) }, pollDelayMs = 0, maxPolls = 3).scan(output)
         }
     }
 
@@ -149,7 +160,7 @@ class ScanPipelineTest {
         }
 
         val output = createTempFile().toFile()
-        ScanPipeline(transport, pollDelayMs = 0).scan(output, resolution = 600, colorMode = ScanColorMode.GRAYSCALE)
+        ScanPipeline({ NonClosingTransport(transport) }, pollDelayMs = 0).scan(output, resolution = 600, colorMode = ScanColorMode.GRAYSCALE)
 
         assertTrue(capturedJobBody.contains("<XResolution>600</XResolution>"))
         assertTrue(capturedJobBody.contains("<YResolution>600</YResolution>"))

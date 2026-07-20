@@ -22,17 +22,14 @@ class ScanPipelineHardwareTest {
         val manager = UsbPrinterManager(ctx)
         val device = manager.findPrinter()
             ?: throw AssertionError("No printer found -- is the DeskJet 2300-series MFP connected via USB?")
-        val transport = manager.openScanTransport(device)
+        manager.openScanTransport(device)?.close()
             ?: throw AssertionError("No LEDM scan interface (255/4) found on the connected device")
 
         val output = File(ctx.cacheDir, "hardware-scan-test.jpg")
-        try {
-            ScanPipeline(transport).scan(output)
-            assertTrue("Output file should be non-trivial", output.length() > 1024)
-            val magic = output.inputStream().use { it.readNBytes(2) }
-            assertTrue("Output should start with the JPEG magic bytes", magic[0] == 0xFF.toByte() && magic[1] == 0xD8.toByte())
-        } finally {
-            transport.close()
-        }
+        ScanPipeline({ manager.openScanTransport(device) ?: throw AssertionError("Scan interface disappeared") })
+            .scan(output)
+        assertTrue("Output file should be non-trivial", output.length() > 1024)
+        val magic = output.inputStream().use { it.readNBytes(2) }
+        assertTrue("Output should start with the JPEG magic bytes", magic[0] == 0xFF.toByte() && magic[1] == 0xD8.toByte())
     }
 }
