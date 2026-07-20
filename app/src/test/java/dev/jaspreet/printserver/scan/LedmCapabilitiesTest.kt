@@ -5,6 +5,10 @@ import org.junit.Test
 
 class LedmCapabilitiesTest {
 
+    // Shape confirmed against a real HP DeskJet 2300-series unit's GET /Scan/ScanCaps
+    // response: each <Resolution> wraps an <XResolution>/<YResolution> pair rather than
+    // being a bare digit itself, and the size/resolution fields sit inside a nested
+    // <InputSourceCaps> under <Platen>.
     private val sampleScanCaps = """
         <ScanCaps>
           <ColorEntries>
@@ -12,18 +16,20 @@ class LedmCapabilitiesTest {
             <ColorEntry><ColorType>Gray8</ColorType></ColorEntry>
           </ColorEntries>
           <Platen>
-            <MinWidth>50</MinWidth>
-            <MinHeight>50</MinHeight>
-            <MaxWidth>2550</MaxWidth>
-            <MaxHeight>3300</MaxHeight>
-            <OpticalResolutionWidth>1200</OpticalResolutionWidth>
-            <OpticalResolutionHeight>1200</OpticalResolutionHeight>
-            <SupportedResolutions>
-              <Resolution>75</Resolution>
-              <Resolution>150</Resolution>
-              <Resolution>300</Resolution>
-              <Resolution>600</Resolution>
-            </SupportedResolutions>
+            <InputSourceCaps>
+              <MinWidth>50</MinWidth>
+              <MinHeight>50</MinHeight>
+              <MaxWidth>2550</MaxWidth>
+              <MaxHeight>3300</MaxHeight>
+              <MaxOpticalXResolution>1200</MaxOpticalXResolution>
+              <MaxOpticalYResolution>1200</MaxOpticalYResolution>
+              <SupportedResolutions>
+                <Resolution><XResolution>75</XResolution><YResolution>75</YResolution></Resolution>
+                <Resolution><XResolution>150</XResolution><YResolution>150</YResolution></Resolution>
+                <Resolution><XResolution>300</XResolution><YResolution>300</YResolution></Resolution>
+                <Resolution><XResolution>600</XResolution><YResolution>600</YResolution></Resolution>
+              </SupportedResolutions>
+            </InputSourceCaps>
           </Platen>
         </ScanCaps>
     """.trimIndent()
@@ -53,9 +59,13 @@ class LedmCapabilitiesTest {
             <ScanCaps>
               <ColorEntries><ColorEntry><ColorType>Gray8</ColorType></ColorEntry></ColorEntries>
               <Platen>
-                <MinWidth>50</MinWidth><MinHeight>50</MinHeight>
-                <MaxWidth>2550</MaxWidth><MaxHeight>3300</MaxHeight>
-                <SupportedResolutions><Resolution>300</Resolution></SupportedResolutions>
+                <InputSourceCaps>
+                  <MinWidth>50</MinWidth><MinHeight>50</MinHeight>
+                  <MaxWidth>2550</MaxWidth><MaxHeight>3300</MaxHeight>
+                  <SupportedResolutions>
+                    <Resolution><XResolution>300</XResolution><YResolution>300</YResolution></Resolution>
+                  </SupportedResolutions>
+                </InputSourceCaps>
               </Platen>
             </ScanCaps>
         """.trimIndent()
