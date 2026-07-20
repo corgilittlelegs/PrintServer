@@ -236,21 +236,26 @@ class ServerService : Service() {
         // failed capability query just means this printer doesn't support (or we can't
         // yet drive) scanning -- the print pipeline above must not be affected.
         var liveScanCapabilities: dev.jaspreet.printserver.scan.ScannerCapabilities? = null
-        val scan = try {
-            usb.openScanTransport(device)
+        liveScanCapabilities = try {
+            val capsTransport = usb.openScanTransport(device)
+            try {
+                capsTransport?.let { LedmCapabilities.query(it) }
+            } finally {
+                capsTransport?.close()
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "Scan transport open failed, scan server not started: ${e.message}")
+            Log.w(TAG, "ScanCaps query failed, scan server not started: ${e.message}")
             null
         }
-        if (scan != null) {
-            scanTransport = scan
-            liveScanCapabilities = try {
-                LedmCapabilities.query(scan)
+        if (liveScanCapabilities != null) {
+            val scan = try {
+                usb.openScanTransport(device)
             } catch (e: Exception) {
-                Log.w(TAG, "ScanCaps query failed, scan server not started: ${e.message}")
+                Log.w(TAG, "Scan transport open failed, scan server not started: ${e.message}")
                 null
             }
-            if (liveScanCapabilities != null) {
+            if (scan != null) {
+                scanTransport = scan
                 // Starting the eSCL server (binding ESCL_PORT) is likewise isolated: a
                 // bind failure here (e.g. stale TIME_WAIT/address-in-use) must not take
                 // down the print pipeline that's already running above.
