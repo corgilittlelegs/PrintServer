@@ -253,7 +253,7 @@ class ServerService : Service() {
                             usb.openScanTransport(device)
                                 ?: throw java.io.IOException("Scan interface no longer available")
                         }
-                        ScanPipeline(openScanTransport).scan(output, resolution, colorMode)
+                        scanWithRetry(openScanTransport, output, resolution, colorMode)
                     },
                 ).also { localEsclServer = it }.start(bindAddr)
             } catch (e: Exception) {
@@ -315,6 +315,32 @@ class ServerService : Service() {
         }
         Log.w(TAG, "ScanCaps query failed after $RETRY_ATTEMPTS attempts, scan server not started")
         return null
+    }
+
+    /** HP's own documented guidance for LEDM "Channel write error" -- a limitation of
+     *  the device's I/O interface, not a driver bug -- is "retry the same operation
+     *  after a few seconds" (HPLIP Known Issues). Every failure observed in hardware
+     *  testing happens before any physical page-feed/scan starts (status check,
+     *  create-job response, or an explicit Busy reply), so retrying the whole scan from
+     *  scratch is safe: nothing physical has happened yet to redo or duplicate. Bounded
+     *  so a genuinely broken scan path still fails within a few seconds rather than
+     *  retrying forever against, e.g., a jammed or disconnected scanner. */
+    private fun scanWithRetry(
+        openScanTransport: () -> dev.jaspreet.printserver.usb.UsbTransport,
+        output: java.io.File,
+        resolution: Int,
+        colorMode: dev.jaspreet.printserver.scan.ScanColorMode,
+    ) {
+        repeat(SCAN_RETRY_ATTEMPTS) { attempt ->
+            try {
+                ScanPipeline(openScanTransport).scan(output, resolution, colorMode)
+                return
+            } catch (e: Exception) {
+                if (attempt == SCAN_RETRY_ATTEMPTS - 1) throw e
+                Log.w(TAG, "Scan attempt ${attempt + 1}/$SCAN_RETRY_ATTEMPTS failed, retrying: ${e.message}")
+                Thread.sleep(SCAN_RETRY_DELAY_MS)
+            }
+        }
     }
 
     private fun fail(message: String) {
@@ -379,5 +405,7 @@ class ServerService : Service() {
         const val ESCL_PORT = 8632
         private const val RETRY_ATTEMPTS = 4
         private const val RETRY_DELAY_MS = 400L
+        private const val SCAN_RETRY_ATTEMPTS = 3
+        private const val SCAN_RETRY_DELAY_MS = 5000L // HPLIP's own guidance: "retry after a few seconds"
     }
 }
