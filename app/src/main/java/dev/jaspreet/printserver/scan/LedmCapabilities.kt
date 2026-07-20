@@ -21,19 +21,28 @@ object LedmCapabilities {
 
     /** Queries the live device over [transport] and parses its response.
      *
-     *  KNOWN ISSUE (found during hardware verification, unresolved): on a real DeskJet
-     *  2300-series unit, issuing a GET /Scan/ScanCaps request appears to leave the LEDM
-     *  session in a state where the *next* request on that USB interface -- even on a
-     *  freshly reopened connection -- gets back a stale copy of this ScanCaps response
-     *  instead of its own real response. This was confirmed by bypassing this query
-     *  entirely: without it, the following GET /Scan/Status parsed correctly. With it
-     *  (even via a separate, closed-before-reuse connection), Status broke every time.
-     *  Root cause is not understood yet -- candidates include a device-side response
-     *  cache keyed loosely by request shape, or something in the `Cookie:
-     *  AccessCounter=new` handling that isn't a true per-request value. Needs a USB
-     *  traffic capture against real hardware to pin down; don't call this from the same
-     *  server-startup flow as an actual scan until that's resolved, or every scan will
-     *  intermittently fail with "Scanner not idle: UNKNOWN". */
+     *  KNOWN ISSUE (found during hardware verification, only partially resolved): on a
+     *  real DeskJet 2300-series unit, LEDM requests over USB bulk are intermittently
+     *  flaky in ways that don't reproduce consistently -- a request sometimes gets back
+     *  a stale/misframed response (e.g. this query's ScanCaps body leaking into a
+     *  later, unrelated request's read), sometimes gets no data at all. Two real,
+     *  well-sourced causes were found and fixed by reading HPLIP's actual reference
+     *  implementation (scan/sane/bb_ledm.c, io/hpmud/musb.c): (1) HPLIP clears both
+     *  bulk endpoints' halt/data-toggle state on every USB channel close, which this
+     *  codebase's `UsbPrinterManager.openInterface` now also does (see its own doc
+     *  comment); (2) HPLIP opens a *fresh* connection per logical request rather than
+     *  holding one open across a whole scan, which `ScanPipeline` now also does. Both
+     *  measurably improved reliability in testing but did NOT fully eliminate the
+     *  flakiness -- some requests, including this one, still occasionally see a
+     *  zero-byte or misframed read even immediately after a fresh, halt-cleared open.
+     *  Remaining candidates: a required settle delay after claiming the interface that
+     *  HPLIP's libusb-based transport gets "for free" from OS-level scheduling but this
+     *  Android implementation doesn't; or something about `Cookie: AccessCounter=new`
+     *  always being sent literally rather than a real per-session value. Needs a USB
+     *  traffic capture against real hardware (e.g. Wireshark with usbmon on a rooted
+     *  device, or a PC running HPLIP against the same printer for a known-good
+     *  reference capture) to pin down further -- don't treat scan failures here as a
+     *  code bug in the caller without checking this file's history first. */
     fun query(transport: UsbTransport, host: String = "localhost"): ScannerCapabilities {
         val requestBytes = LedmRequests.scanCapsRequest(host).toByteArray(Charsets.UTF_8)
         transport.write(requestBytes, 0, requestBytes.size)
