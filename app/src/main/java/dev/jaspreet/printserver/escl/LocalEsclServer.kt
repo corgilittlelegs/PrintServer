@@ -1,5 +1,6 @@
 package dev.jaspreet.printserver.escl
 
+import android.util.Log
 import dev.jaspreet.printserver.http.BodyReader
 import dev.jaspreet.printserver.http.HttpHead
 import dev.jaspreet.printserver.scan.ScanColorMode
@@ -142,6 +143,7 @@ class LocalEsclServer(
                 performScan(resolution, colorMode, output)
                 job.state = EsclJobState.COMPLETED
             } catch (e: Exception) {
+                Log.w("LocalEsclServer", "Scan job ${job.id} aborted: ${e.message}", e)
                 job.state = EsclJobState.ABORTED
             } finally {
                 // Finish all bookkeeping (eviction / orphan cleanup) *before* clearing
