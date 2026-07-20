@@ -80,11 +80,19 @@ class UsbPrinterManager(private val context: Context) {
             .firstOrNull { IppUsb.isLegacyPrinter(it.interfaceClass, it.interfaceSubclass, it.interfaceProtocol) }
             ?.let { openInterface(device, it) }
 
-    /** Opens the first LEDM scan-data interface (255/4), for the scan pipeline. */
+    /** Opens the first LEDM scan-data interface (255/4), for the scan pipeline.
+     *  Hardware testing found the LEDM interface intermittently fails the very first
+     *  request on a freshly claimed connection even with endpoint halt cleared -- a
+     *  short settle delay after claim, before any traffic, measurably reduced (though
+     *  did not eliminate) this. Scoped to just the scan interface, not the shared
+     *  [openInterface] path, since the print interfaces don't show this issue and
+     *  ScanPipeline now opens a fresh connection per LEDM request (see its class doc),
+     *  so this delay is paid once per request, not once per whole scan. */
     fun openScanTransport(device: UsbDevice): UsbTransport? =
         device.interfaces()
             .firstOrNull { ScanUsb.isLedmScan(it.interfaceClass, it.interfaceSubclass) }
             ?.let { openInterface(device, it) }
+            ?.also { Thread.sleep(SCAN_INTERFACE_SETTLE_MS) }
 
     private fun openInterface(device: UsbDevice, iface: UsbInterface): UsbTransport? {
         var outEp: UsbEndpoint? = null
@@ -135,5 +143,6 @@ class UsbPrinterManager(private val context: Context) {
 
     companion object {
         const val ACTION_USB_PERMISSION = "dev.jaspreet.printserver.USB_PERMISSION"
+        private const val SCAN_INTERFACE_SETTLE_MS = 150L
     }
 }
