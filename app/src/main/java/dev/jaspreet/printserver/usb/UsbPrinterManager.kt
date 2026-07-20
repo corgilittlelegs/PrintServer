@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
@@ -100,7 +101,33 @@ class UsbPrinterManager(private val context: Context) {
             connection.close()
             throw IOException("claimInterface failed for interface ${iface.id}")
         }
+        // HPLIP's own USB channel layer (io/hpmud/musb.c's musb_raw_channel_close)
+        // clears both bulk endpoints' halt condition -- resetting the host/device data
+        // toggle synchronization -- on every channel close. claimInterface() alone does
+        // not do this; a channel left in a non-zero toggle state from a prior session
+        // (e.g. this app force-killed mid-transfer) can desync the very first read/write
+        // on a freshly claimed interface. Android's UsbDeviceConnection has no clearHalt
+        // API (unlike libusb), so this issues the same standard CLEAR_FEATURE(ENDPOINT_HALT)
+        // control transfer by hand, on both endpoints, right after claim -- re-establishing
+        // a known-clean DATA0 state before any traffic flows.
+        clearEndpointHalt(connection, outEp)
+        clearEndpointHalt(connection, inEp)
         return AndroidUsbTransport(connection, iface, outEp, inEp)
+    }
+
+    /** Standard USB CLEAR_FEATURE(ENDPOINT_HALT) request (USB 2.0 spec §9.4.1), sent by
+     *  hand since [android.hardware.usb.UsbDeviceConnection] exposes no clearHalt method.
+     *  Best-effort: a device that doesn't support/need it (e.g. it was never halted)
+     *  typically just STALLs or no-ops this, which controlTransfer surfaces as a
+     *  negative return -- not worth failing interface setup over. */
+    private fun clearEndpointHalt(connection: UsbDeviceConnection, endpoint: UsbEndpoint) {
+        val requestTypeHostToDeviceStandardEndpoint = 0x02
+        val requestClearFeature = 0x01
+        val featureEndpointHalt = 0x00
+        connection.controlTransfer(
+            requestTypeHostToDeviceStandardEndpoint, requestClearFeature,
+            featureEndpointHalt, endpoint.address, null, 0, 1000,
+        )
     }
 
     private fun UsbDevice.interfaces(): List<UsbInterface> =
