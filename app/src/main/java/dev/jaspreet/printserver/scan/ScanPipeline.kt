@@ -33,6 +33,7 @@ class ScanPipeline(
         private const val DEFAULT_WIDTH = 2550  // US Letter width at 300dpi -- placeholder, see Task 6
         private const val DEFAULT_HEIGHT = 3300 // US Letter height at 300dpi -- placeholder, see Task 6
         private const val READ_CHUNK = 16384
+        private const val JOB_START_SETTLE_MS = 1500L
     }
 
     fun scan(output: File, resolution: Int = DEFAULT_RESOLUTION, colorMode: ScanColorMode = ScanColorMode.COLOR) {
@@ -67,6 +68,13 @@ class ScanPipeline(
                 ?: throw IOException("No Location header in create-job response")
         }
 
+        // The create-job response confirms the job was accepted, but the flatbed
+        // carriage/lamp physically starts moving right around here -- hardware testing
+        // showed USB reads failing specifically in this window (electrical noise from
+        // motor startup, most likely), never once the scan is already underway. A short
+        // pause before hitting the device with more traffic avoids racing that startup
+        // transient.
+        Thread.sleep(JOB_START_SETTLE_MS)
         val binaryUrl = withTransport { transport -> pollUntilPageReady(transport, jobUrl) }
 
         withTransport { transport ->
