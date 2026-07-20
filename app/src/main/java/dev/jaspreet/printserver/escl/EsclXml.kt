@@ -25,7 +25,7 @@ object EsclXml {
         }
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
             "<scan:ScannerCapabilities xmlns:scan=\"$SCAN_NS\" xmlns:pwg=\"$PWG_NS\">" +
-            "<pwg:Version>2.63</pwg:Version>" +
+            "<pwg:Version>2.0</pwg:Version>" +
             "<pwg:MakeAndModel>$makeAndModel</pwg:MakeAndModel>" +
             "<scan:Platen><scan:PlatenInputCaps>" +
             "<scan:MinWidth>50</scan:MinWidth><scan:MinHeight>50</scan:MinHeight>" +
@@ -59,8 +59,13 @@ object EsclXml {
         }
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
             "<scan:ScannerStatus xmlns:scan=\"$SCAN_NS\" xmlns:pwg=\"$PWG_NS\">" +
-            "<pwg:Version>2.63</pwg:Version>" +
-            "<scan:State>$state</scan:State>" +
+            "<pwg:Version>2.0</pwg:Version>" +
+            // Real clients (confirmed against sane-airscan's actual parsing code,
+            // airscan-escl.c's escl_parse_scanner_status()) look up the top-level
+            // scanner state as "pwg:State", not "scan:State" -- getting this wrong
+            // means a client can never confirm the scanner is Idle and so never
+            // proceeds to POST a scan job, no matter how many times it polls status.
+            "<pwg:State>$state</pwg:State>" +
             "<scan:Jobs>$jobEntries</scan:Jobs>" +
             "</scan:ScannerStatus>"
     }

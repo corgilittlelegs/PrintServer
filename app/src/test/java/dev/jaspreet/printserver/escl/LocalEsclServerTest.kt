@@ -85,7 +85,7 @@ class LocalEsclServerTest {
         val port = start()
         val (status, body) = httpGet(port, "/eSCL/ScannerStatus")
         assertEquals(200, status)
-        assertTrue(body.contains("<scan:State>Idle</scan:State>"))
+        assertTrue(body.contains("<pwg:State>Idle</pwg:State>"))
     }
 
     @Test

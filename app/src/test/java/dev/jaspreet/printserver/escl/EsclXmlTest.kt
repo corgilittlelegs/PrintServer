@@ -69,13 +69,13 @@ class EsclXmlTest {
     @Test
     fun `builds a ScannerStatus response reporting Idle with no jobs`() {
         val xml = EsclXml.scannerStatus(jobs = emptyList())
-        assertTrue(xml.contains("<scan:State>Idle</scan:State>"))
+        assertTrue(xml.contains("<pwg:State>Idle</pwg:State>"))
     }
 
     @Test
     fun `builds a ScannerStatus response reporting Processing with an active job`() {
         val xml = EsclXml.scannerStatus(jobs = listOf(EsclJobInfo(id = "1", state = "Processing")))
-        assertTrue(xml.contains("<scan:State>Processing</scan:State>"))
+        assertTrue(xml.contains("<pwg:State>Processing</pwg:State>"))
         assertTrue(xml.contains("<pwg:JobUri>/eSCL/ScanJobs/1</pwg:JobUri>"))
         assertTrue(xml.contains("<pwg:JobState>Processing</pwg:JobState>"))
     }
