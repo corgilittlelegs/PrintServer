@@ -16,7 +16,7 @@ class EsclTxtRecordsTest {
         val txt = EsclTxtRecords.forEscl(caps, makeAndModel = "PrintServer Scanner")
         assertEquals("PrintServer Scanner", txt["ty"])
         assertEquals("image/jpeg", txt["pdl"])
-        assertEquals("t", txt["rs"])
+        assertEquals("eSCL", txt["rs"])
         assertEquals("2.63", txt["vers"])
     }
 }
