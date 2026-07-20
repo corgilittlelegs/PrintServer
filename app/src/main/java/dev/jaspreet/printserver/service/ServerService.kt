@@ -234,18 +234,7 @@ class ServerService : Service() {
         // query succeeds, start the eSCL server on it. A missing scan interface or a
         // failed capability query just means this printer doesn't support (or we can't
         // yet drive) scanning -- the print pipeline above must not be affected.
-        var liveScanCapabilities: dev.jaspreet.printserver.scan.ScannerCapabilities? = null
-        liveScanCapabilities = try {
-            val capsTransport = usb.openScanTransport(device)
-            try {
-                capsTransport?.let { LedmCapabilities.query(it) }
-            } finally {
-                capsTransport?.close()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "ScanCaps query failed, scan server not started: ${e.message}")
-            null
-        }
+        var liveScanCapabilities = queryScanCapabilitiesWithRetry(usb, device)
         if (liveScanCapabilities != null) {
             // Starting the eSCL server (binding ESCL_PORT) is likewise isolated: a
             // bind failure here (e.g. stale TIME_WAIT/address-in-use) must not take
@@ -299,6 +288,33 @@ class ServerService : Service() {
             )
         }
         notify("Serving ${caps.makeAndModel} at ${bindAddr.hostAddress}:$IPP_PORT")
+    }
+
+    /** ScanCaps queries against real LEDM-over-USB hardware are intermittently flaky in
+     *  ways not yet fully root-caused (see `LedmCapabilities.query`'s doc comment) --
+     *  a fresh retry very often succeeds where the previous attempt didn't. Bounded so a
+     *  genuinely scan-incapable printer (or one with a truly dead scan interface) still
+     *  fails startup promptly rather than hanging. Each attempt opens and closes its own
+     *  transport (never reuses a failed attempt's connection). */
+    private fun queryScanCapabilitiesWithRetry(
+        usb: UsbPrinterManager,
+        device: android.hardware.usb.UsbDevice,
+    ): dev.jaspreet.printserver.scan.ScannerCapabilities? {
+        repeat(RETRY_ATTEMPTS) { attempt ->
+            try {
+                val capsTransport = usb.openScanTransport(device) ?: return null
+                try {
+                    return LedmCapabilities.query(capsTransport)
+                } finally {
+                    capsTransport.close()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "ScanCaps query attempt ${attempt + 1}/$RETRY_ATTEMPTS failed: ${e.message}")
+                if (attempt < RETRY_ATTEMPTS - 1) Thread.sleep(RETRY_DELAY_MS)
+            }
+        }
+        Log.w(TAG, "ScanCaps query failed after $RETRY_ATTEMPTS attempts, scan server not started")
+        return null
     }
 
     private fun fail(message: String) {
@@ -361,5 +377,7 @@ class ServerService : Service() {
         const val IPP_PORT = 8631
         const val RAW_PORT = 9100
         const val ESCL_PORT = 8632
+        private const val RETRY_ATTEMPTS = 4
+        private const val RETRY_DELAY_MS = 400L
     }
 }

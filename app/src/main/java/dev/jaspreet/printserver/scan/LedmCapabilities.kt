@@ -1,6 +1,7 @@
 package dev.jaspreet.printserver.scan
 
 import dev.jaspreet.printserver.usb.UsbTransport
+import java.io.IOException
 
 data class ScannerCapabilities(
     val maxWidth: Int,
@@ -53,7 +54,19 @@ object LedmCapabilities {
         }
         ChunkedHttp.readHeader(reader)
         val body = String(ChunkedHttp.readChunkedBody(reader), Charsets.US_ASCII)
-        return parse(body)
+        val result = parse(body)
+        // A misframed/truncated read (see this object's known-issue doc above) can
+        // produce a response that "parses" without throwing but is actually empty --
+        // <Platen>/<SupportedResolutions>/<ColorEntries> not found, so every field
+        // silently defaults to 0/empty. Treat that the same as an outright failure
+        // (throw, let the caller retry) rather than silently handing a real eSCL client
+        // capabilities it can't build any valid scan request from.
+        if (result.maxWidth <= 0 || result.maxHeight <= 0 ||
+            result.supportedResolutions.isEmpty() || result.supportedColorModes.isEmpty()
+        ) {
+            throw IOException("ScanCaps response parsed to empty/degenerate capabilities: $result")
+        }
+        return result
     }
 
     /** Pure parsing of an already-fetched ScanCaps XML body -- the seam JVM tests exercise. */
