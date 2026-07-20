@@ -46,7 +46,11 @@ class ScanPipeline(
         val jobBodyBytes = jobBody.toByteArray(Charsets.UTF_8)
         val footerBytes = LedmRequests.ZERO_FOOTER.toByteArray(Charsets.UTF_8)
         val jobHeader = LedmRequests.createJobHeader(host, jobBodyBytes.size + footerBytes.size)
-        val createReader = send(jobHeader.toByteArray(Charsets.UTF_8), jobBodyBytes, footerBytes)
+        // Sent as one combined write, not three separate ones (header, then body, then
+        // footer) -- confirmed against real hardware that splitting this POST across
+        // multiple USB bulk transfers made the device never respond at all, unlike the
+        // single-part GET requests elsewhere in this class, which work fine as-is.
+        val createReader = send(jobHeader.toByteArray(Charsets.UTF_8) + jobBodyBytes + footerBytes)
         val createHeader = ChunkedHttp.readHeader(createReader)
         ChunkedHttp.readChunkedBody(createReader) // body unused, only the Location header matters
         val jobUrl = LedmResponses.parseLocationHeader(createHeader)
