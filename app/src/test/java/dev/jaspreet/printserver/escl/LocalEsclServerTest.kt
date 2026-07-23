@@ -1,6 +1,7 @@
 package dev.jaspreet.printserver.escl
 
 import dev.jaspreet.printserver.scan.ScanColorMode
+import dev.jaspreet.printserver.scan.ScanToneSettings
 import dev.jaspreet.printserver.scan.ScannerCapabilities
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -24,14 +25,19 @@ class LocalEsclServerTest {
             maxWidth = 2550, maxHeight = 3300,
             supportedResolutions = listOf(300), supportedColorModes = setOf(ScanColorMode.COLOR),
         ),
-        onScan: (resolution: Int, colorMode: ScanColorMode, output: java.io.File) -> Unit = { _, _, output ->
+        onScan: (resolution: Int, colorMode: ScanColorMode, brightness: Int, contrast: Int, output: java.io.File) -> Unit = { _, _, _, _, output ->
             output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x00, 0xFF.toByte(), 0xD9.toByte()))
         },
+        defaultToneSettings: () -> ScanToneSettings = { ScanToneSettings() },
+        nextDocumentWaitTimeoutMs: Long = 120_000,
+        nextDocumentPollDelayMs: Long = 250,
     ): Int {
         spoolDir = createTempDir()
         val s = LocalEsclServer(
             port = 0, makeAndModel = "PrintServer Scanner", capabilities = capabilities,
-            spoolDir = spoolDir, performScan = onScan,
+            spoolDir = spoolDir, performScan = onScan, defaultToneSettings = defaultToneSettings,
+            nextDocumentWaitTimeoutMs = nextDocumentWaitTimeoutMs,
+            nextDocumentPollDelayMs = nextDocumentPollDelayMs,
         )
         s.start(bindAddress = null)
         server = s
@@ -91,7 +97,7 @@ class LocalEsclServerTest {
     @Test
     fun `POST ScanJobs starts a scan and returns a Location header`() {
         val done = CountDownLatch(1)
-        val port = start(onScan = { _, _, output ->
+        val port = start(onScan = { _, _, _, _, output ->
             output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte()))
             done.countDown()
         })
@@ -102,8 +108,57 @@ class LocalEsclServerTest {
     }
 
     @Test
+    fun `POST ScanJobs forwards resolved tone settings to scan callback`() {
+        val done = CountDownLatch(1)
+        var capturedBrightness = -1
+        var capturedContrast = -1
+        val port = start(onScan = { _, _, brightness, contrast, output ->
+            capturedBrightness = brightness
+            capturedContrast = contrast
+            output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte()))
+            done.countDown()
+        })
+        val body = """
+            <scan:ScanSettings xmlns:scan="http://schemas.hp.com/imaging/escl/2011/05/03">
+              <scan:Brightness>2500</scan:Brightness>
+              <scan:Contrast>750</scan:Contrast>
+            </scan:ScanSettings>
+        """.trimIndent()
+
+        val (status, _) = httpPost(port, "/eSCL/ScanJobs", body)
+
+        assertEquals(201, status)
+        assertTrue("scan should complete", done.await(5, TimeUnit.SECONDS))
+        assertEquals(2000, capturedBrightness)
+        assertEquals(750, capturedContrast)
+    }
+
+    @Test
+    fun `POST ScanJobs uses app tone defaults when client omits tone settings`() {
+        val done = CountDownLatch(1)
+        var capturedBrightness = -1
+        var capturedContrast = -1
+        val port = start(
+            defaultToneSettings = { ScanToneSettings(brightness = 1150, contrast = 850) },
+            onScan = { _, _, brightness, contrast, output ->
+                capturedBrightness = brightness
+                capturedContrast = contrast
+                output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte()))
+                done.countDown()
+            },
+        )
+
+        val (status, _) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+
+        assertEquals(201, status)
+        assertTrue("scan should complete", done.await(5, TimeUnit.SECONDS))
+        assertEquals(1150, capturedBrightness)
+        assertEquals(850, capturedContrast)
+    }
+
+    @Test
     fun `NextDocument serves the scanned bytes once the job completes`() {
-        val port = start(onScan = { _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01)) })
+        val port = start(onScan = { _, _, _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01)) })
         val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
         // Poll ScannerStatus until the job is no longer Processing -- the scan callback
         // above returns immediately, but the server processes it on a background thread.
@@ -118,8 +173,65 @@ class LocalEsclServerTest {
     }
 
     @Test
+    fun `NextDocument waits for an in-flight job and serves bytes when it completes`() {
+        val scanStarted = CountDownLatch(1)
+        val releaseScan = CountDownLatch(1)
+        val nextDocumentResult = java.util.concurrent.atomic.AtomicReference<Pair<Int, String>>()
+        val port = start(
+            nextDocumentWaitTimeoutMs = 5_000,
+            nextDocumentPollDelayMs = 20,
+            onScan = { _, _, _, _, output ->
+                scanStarted.countDown()
+                releaseScan.await(5, TimeUnit.SECONDS)
+                output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01))
+            },
+        )
+        val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+        assertTrue("scan should have started", scanStarted.await(5, TimeUnit.SECONDS))
+
+        val fetchThread = Thread {
+            nextDocumentResult.set(httpGet(port, "$location/NextDocument"))
+        }
+        fetchThread.start()
+        Thread.sleep(100)
+        assertTrue("NextDocument should still be waiting while scan is processing", fetchThread.isAlive)
+
+        releaseScan.countDown()
+        fetchThread.join(5_000)
+
+        assertEquals(200, nextDocumentResult.get().first)
+    }
+
+    @Test
+    fun `ScannerStatus retains a completed job until its document is fetched`() {
+        val port = start(onScan = { _, _, _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01)) })
+        val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+        val jobId = location.substringAfterLast("/")
+
+        var statusBody = ""
+        var attempts = 20
+        while (attempts-- > 0) {
+            val (_, body) = httpGet(port, "/eSCL/ScannerStatus")
+            statusBody = body
+            if (body.contains("<pwg:JobState>Completed</pwg:JobState>")) break
+            Thread.sleep(50)
+        }
+
+        assertTrue(statusBody.contains("<pwg:State>Idle</pwg:State>"))
+        assertTrue(statusBody.contains("<pwg:JobUri>/eSCL/ScanJobs/$jobId</pwg:JobUri>"))
+        assertTrue(statusBody.contains("<pwg:JobState>Completed</pwg:JobState>"))
+        assertTrue(statusBody.contains("<pwg:ImagesCompleted>1</pwg:ImagesCompleted>"))
+        assertTrue(statusBody.contains("<pwg:ImagesToTransfer>1</pwg:ImagesToTransfer>"))
+
+        val (docStatus, _) = httpGet(port, "$location/NextDocument")
+        assertEquals(200, docStatus)
+        val (_, afterFetchStatus) = httpGet(port, "/eSCL/ScannerStatus")
+        assertTrue(!afterFetchStatus.contains("<pwg:JobUri>/eSCL/ScanJobs/$jobId</pwg:JobUri>"))
+    }
+
+    @Test
     fun `NextDocument only serves a completed job once`() {
-        val port = start(onScan = { _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01)) })
+        val port = start(onScan = { _, _, _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01)) })
         val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
         var attempts = 20
         while (attempts-- > 0) {
@@ -139,7 +251,7 @@ class LocalEsclServerTest {
     fun `a second POST while a job is in flight is rejected`() {
         val holdLatch = CountDownLatch(1)
         val releaseLatch = CountDownLatch(1)
-        val port = start(onScan = { _, _, output ->
+        val port = start(onScan = { _, _, _, _, output ->
             holdLatch.countDown()
             releaseLatch.await(5, TimeUnit.SECONDS)
             output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte()))
@@ -155,7 +267,7 @@ class LocalEsclServerTest {
     fun `DELETE of an in-flight job does not free the scanner slot while it is still processing`() {
         val holdLatch = CountDownLatch(1)
         val releaseLatch = CountDownLatch(1)
-        val port = start(onScan = { _, _, output ->
+        val port = start(onScan = { _, _, _, _, output ->
             holdLatch.countDown()
             releaseLatch.await(5, TimeUnit.SECONDS)
             output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte()))
@@ -171,6 +283,10 @@ class LocalEsclServerTest {
         val deleteStatus = httpDelete(port, location)
         assertEquals(200, deleteStatus)
 
+        val (_, statusBody) = httpGet(port, "/eSCL/ScannerStatus")
+        assertTrue(statusBody.contains("<pwg:State>Processing</pwg:State>"))
+        assertTrue(statusBody.contains("<pwg:JobUri>$location</pwg:JobUri>"))
+
         val (secondStatus, _) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
         assertEquals(
             "second POST must still be rejected -- the in-flight job's slot must not have been freed by DELETE",
@@ -182,7 +298,7 @@ class LocalEsclServerTest {
 
     @Test
     fun `DELETE removes the spooled output file from disk`() {
-        val port = start(onScan = { _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01)) })
+        val port = start(onScan = { _, _, _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01)) })
         val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
         var attempts = 20
         while (attempts-- > 0) {
@@ -201,7 +317,7 @@ class LocalEsclServerTest {
 
     @Test
     fun `NextDocument does not serve a 200 for an aborted job's partial bytes`() {
-        val port = start(onScan = { _, _, output ->
+        val port = start(onScan = { _, _, _, _, output ->
             // Simulate a partial/truncated write followed by a mid-scan failure, e.g. a
             // USB write error -- the file exists on disk but the job is Aborted.
             output.writeBytes(byteArrayOf(0xFF.toByte()))
@@ -224,7 +340,7 @@ class LocalEsclServerTest {
         // never sends DELETE doesn't leak spooled files forever -- submit 201 scans
         // sequentially (this server allows only one in flight at a time) and confirm
         // the oldest job's output file is evicted from disk once the cap is exceeded.
-        val port = start(onScan = { _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte())) })
+        val port = start(onScan = { _, _, _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte())) })
 
         fun runOneScanToCompletion(): String {
             // Retry on 503 rather than assuming the previous job's slot is already free --

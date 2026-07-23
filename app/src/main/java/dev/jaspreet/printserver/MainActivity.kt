@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.jaspreet.printserver.activity.ActivityLog
 import dev.jaspreet.printserver.jobs.QueueState
+import dev.jaspreet.printserver.scan.ScanToneSettingsState
 import dev.jaspreet.printserver.service.ServerService
 import dev.jaspreet.printserver.service.ServerState
 import dev.jaspreet.printserver.ui.PrintServerApp
@@ -43,10 +44,12 @@ class MainActivity : AppCompatActivity() {
             val status by ServerState.status.collectAsStateWithLifecycle()
             val activityEntries by ActivityLog.entries.collectAsStateWithLifecycle()
             val queueEntries by QueueState.entries.collectAsStateWithLifecycle()
+            val scanToneSettings by ScanToneSettingsState.settings.collectAsStateWithLifecycle()
 
             PrintServerTheme {
                 PrintServerApp(
                     status = status,
+                    scanToneSettings = scanToneSettings,
                     activityEntries = activityEntries,
                     queueEntries = queueEntries,
                     onStartServerClick = { startServerIfPermitted() },
@@ -57,6 +60,9 @@ class MainActivity : AppCompatActivity() {
                         if (QueueState.retry(id) == null) {
                             Toast.makeText(this, "Job no longer available to retry", Toast.LENGTH_SHORT).show()
                         }
+                    },
+                    onScanToneSettingsChange = { brightness, contrast ->
+                        ScanToneSettingsState.update(brightness, contrast)
                     },
                 )
             }

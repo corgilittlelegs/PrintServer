@@ -47,6 +47,8 @@ import dev.jaspreet.printserver.activity.ActivityStatus
 import dev.jaspreet.printserver.jobs.JobState
 import dev.jaspreet.printserver.jobs.QueueEntry
 import dev.jaspreet.printserver.jobs.QueueState
+import dev.jaspreet.printserver.scan.ScanTone
+import dev.jaspreet.printserver.scan.ScanToneSettings
 import dev.jaspreet.printserver.service.ScanState
 import dev.jaspreet.printserver.service.ServerStatus
 import dev.jaspreet.printserver.ui.components.UsbConnectionIllustration
@@ -58,6 +60,7 @@ import java.util.Date
 @Composable
 fun PrintServerApp(
     status: ServerStatus,
+    scanToneSettings: ScanToneSettings,
     activityEntries: List<ActivityEntry>,
     queueEntries: List<QueueEntry>,
     onStartServerClick: () -> Unit,
@@ -65,6 +68,7 @@ fun PrintServerApp(
     onBatteryExemptionClick: () -> Unit,
     onCancelJob: (Int) -> Unit,
     onRetryJob: (Int) -> Unit,
+    onScanToneSettingsChange: (brightness: Int, contrast: Int) -> Unit,
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val settingsRotationAngle by animateFloatAsState(
@@ -511,7 +515,11 @@ fun PrintServerApp(
                             }
                         }
 
-                        ScanStatusCard(status = status)
+                        ScanStatusCard(
+                            status = status,
+                            scanToneSettings = scanToneSettings,
+                            onScanToneSettingsChange = onScanToneSettingsChange,
+                        )
 
                         // Card 2: Discovery Information
                         Card(
@@ -665,7 +673,11 @@ fun PrintServerApp(
 }
 
 @Composable
-private fun ScanStatusCard(status: ServerStatus) {
+private fun ScanStatusCard(
+    status: ServerStatus,
+    scanToneSettings: ScanToneSettings,
+    onScanToneSettingsChange: (brightness: Int, contrast: Int) -> Unit,
+) {
     val (label, detail, color) = when (status.scanState) {
         ScanState.READY -> Triple(
             "Scanner Ready",
@@ -742,7 +754,54 @@ private fun ScanStatusCard(status: ServerStatus) {
                     lineHeight = 16.sp,
                 )
             }
+            if (status.scanCapabilities != null) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                ScanToneSlider(
+                    label = "Brightness",
+                    value = scanToneSettings.brightness,
+                    onValueChange = {
+                        onScanToneSettingsChange(it, scanToneSettings.contrast)
+                    },
+                )
+                ScanToneSlider(
+                    label = "Contrast",
+                    value = scanToneSettings.contrast,
+                    onValueChange = {
+                        onScanToneSettingsChange(scanToneSettings.brightness, it)
+                    },
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun ScanToneSlider(label: String, value: Int, onValueChange: (Int) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = value.toString(),
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        Slider(
+            value = value.toFloat(),
+            onValueChange = { onValueChange(it.toInt()) },
+            valueRange = ScanTone.MIN.toFloat()..ScanTone.MAX.toFloat(),
+            steps = 39,
+        )
     }
 }
 

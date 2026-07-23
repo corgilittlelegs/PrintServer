@@ -34,16 +34,17 @@ class ScanPipeline(
         private const val DEFAULT_HEIGHT = 3508
         private const val READ_CHUNK = 16384
         private const val JOB_START_SETTLE_MS = 1500L
+        private const val START_IDLE_POLLS = 20
     }
 
-    fun scan(output: File, resolution: Int = DEFAULT_RESOLUTION, colorMode: ScanColorMode = ScanColorMode.COLOR) {
-        val state = withTransport { transport ->
-            val reader = send(transport, LedmRequests.statusRequest(host))
-            ChunkedHttp.readHeader(reader)
-            val body = String(ChunkedHttp.readChunkedBody(reader), Charsets.US_ASCII)
-            LedmResponses.parseScannerState(body)
-        }
-        if (state != ScannerState.IDLE) throw IOException("Scanner not idle: $state")
+    fun scan(
+        output: File,
+        resolution: Int = DEFAULT_RESOLUTION,
+        colorMode: ScanColorMode = ScanColorMode.COLOR,
+        brightness: Int = ScanTone.DEFAULT,
+        contrast: Int = ScanTone.DEFAULT,
+    ) {
+        waitUntilIdle()
 
         val colorSpace = when (colorMode) {
             ScanColorMode.COLOR -> "Color"
@@ -57,6 +58,8 @@ class ScanPipeline(
         val height = DEFAULT_HEIGHT
         val jobBody = LedmRequests.createJobBody(
             resolution, resolution, 0, width, 0, height, colorSpace,
+            brightness = ScanTone.resolve(brightness),
+            contrast = ScanTone.resolve(contrast),
         )
         val jobBodyBytes = jobBody.toByteArray(Charsets.UTF_8)
         val footerBytes = LedmRequests.ZERO_FOOTER.toByteArray(Charsets.UTF_8)
@@ -108,6 +111,23 @@ class ScanPipeline(
                     Thread.sleep(pollDelayMs)
                 }
             }
+        }
+    }
+
+    private fun waitUntilIdle() {
+        var pollsLeft = START_IDLE_POLLS
+        while (true) {
+            val state = withTransport { transport ->
+                val reader = send(transport, LedmRequests.statusRequest(host))
+                ChunkedHttp.readHeader(reader)
+                val body = String(ChunkedHttp.readChunkedBody(reader), Charsets.US_ASCII)
+                LedmResponses.parseScannerState(body)
+            }
+            if (state == ScannerState.IDLE) return
+            if (state != ScannerState.BUSY || --pollsLeft <= 0) {
+                throw IOException("Scanner not idle: $state")
+            }
+            Thread.sleep(pollDelayMs)
         }
     }
 

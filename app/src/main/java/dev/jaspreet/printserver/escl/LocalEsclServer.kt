@@ -4,6 +4,8 @@ import android.util.Log
 import dev.jaspreet.printserver.http.BodyReader
 import dev.jaspreet.printserver.http.HttpHead
 import dev.jaspreet.printserver.scan.ScanColorMode
+import dev.jaspreet.printserver.scan.ScanTone
+import dev.jaspreet.printserver.scan.ScanToneSettings
 import dev.jaspreet.printserver.scan.ScannerCapabilities
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -37,6 +39,7 @@ private fun EsclJobState.toWireString(): String = when (this) {
 private class EsclJob(val id: String, val outputFile: File) {
     @Volatile var state: EsclJobState = EsclJobState.PROCESSING
     val delivered = AtomicBoolean(false)
+    val createdAtMs: Long = System.currentTimeMillis()
 }
 
 /**
@@ -54,8 +57,17 @@ class LocalEsclServer(
     private val makeAndModel: String,
     private val capabilities: ScannerCapabilities,
     private val spoolDir: File,
-    private val performScan: (resolution: Int, colorMode: ScanColorMode, output: File) -> Unit,
+    private val performScan: (
+        resolution: Int,
+        colorMode: ScanColorMode,
+        brightness: Int,
+        contrast: Int,
+        output: File,
+    ) -> Unit,
+    private val defaultToneSettings: () -> ScanToneSettings = { ScanToneSettings() },
     private val maxConcurrentClients: Int = 64,
+    private val nextDocumentWaitTimeoutMs: Long = 120_000,
+    private val nextDocumentPollDelayMs: Long = 250,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
     private val executor = Executors.newCachedThreadPool()
@@ -109,10 +121,15 @@ class LocalEsclServer(
             val body = try { BodyReader.readAll(head, cin) } catch (_: IOException) { ByteArray(0) }
 
             when {
-                method == "GET" && path == "/eSCL/ScannerCapabilities" ->
+                method == "GET" && path == "/eSCL/ScannerCapabilities" -> {
+                    logRequest(method, path, 200)
                     respond(cout, 200, "text/xml", EsclXml.scannerCapabilities(capabilities, makeAndModel))
-                method == "GET" && path == "/eSCL/ScannerStatus" ->
-                    respond(cout, 200, "text/xml", EsclXml.scannerStatus(currentJobInfo()))
+                }
+                method == "GET" && path == "/eSCL/ScannerStatus" -> {
+                    val jobs = currentJobInfo()
+                    logRequest(method, path, 200, "jobs=${jobs.joinToString { "${it.id}:${it.state}" }}")
+                    respond(cout, 200, "text/xml", EsclXml.scannerStatus(jobs))
+                }
                 method == "POST" && path == "/eSCL/ScanJobs" ->
                     handleCreateJob(cout, body)
                 method == "GET" && path.startsWith("/eSCL/ScanJobs/") && path.endsWith("/NextDocument") ->
@@ -130,20 +147,25 @@ class LocalEsclServer(
             ?: capabilities.supportedResolutions.firstOrNull() ?: 300
         val colorMode = settings.colorMode?.takeIf { it in capabilities.supportedColorModes }
             ?: capabilities.supportedColorModes.firstOrNull() ?: ScanColorMode.COLOR
+        val defaults = defaultToneSettings()
+        val brightness = ScanTone.resolve(settings.brightness, defaults.brightness)
+        val contrast = ScanTone.resolve(settings.contrast, defaults.contrast)
 
         spoolDir.mkdirs()
         val id = nextJobId.getAndIncrement().toString()
         val output = File(spoolDir, "escl-job-$id.jpg")
         val job = EsclJob(id, output)
         if (!currentJob.compareAndSet(null, job)) {
+            logRequest("POST", "/eSCL/ScanJobs", 503, "scanner busy")
             respond(cout, 503, "text/plain", "Scanner busy")
             return
         }
         jobs[id] = job
         executor.execute {
             try {
-                performScan(resolution, colorMode, output)
+                performScan(resolution, colorMode, brightness, contrast, output)
                 job.state = EsclJobState.COMPLETED
+                Log.i("LocalEsclServer", "eSCL job ${job.id} completed outputBytes=${output.length()}")
             } catch (e: Exception) {
                 Log.w("LocalEsclServer", "Scan job ${job.id} aborted: ${e.message}", e)
                 job.state = EsclJobState.ABORTED
@@ -166,6 +188,12 @@ class LocalEsclServer(
                 currentJob.compareAndSet(job, null)
             }
         }
+        logRequest(
+            "POST",
+            "/eSCL/ScanJobs",
+            201,
+            "job=$id resolution=$resolution colorMode=$colorMode brightness=$brightness contrast=$contrast",
+        )
         respondWithHeaders(cout, 201, "text/plain", "", mapOf("Location" to "/eSCL/ScanJobs/$id"))
     }
 
@@ -191,35 +219,66 @@ class LocalEsclServer(
 
     private fun handleNextDocument(cout: BufferedOutputStream, path: String) {
         val id = path.removePrefix("/eSCL/ScanJobs/").removeSuffix("/NextDocument")
-        val job = jobs[id]
+        val job = waitForNextDocumentJob(id)
         // A known job that isn't COMPLETED must never be served -- Processing means no
         // bytes are ready yet, and Aborted means whatever bytes made it to disk may be a
         // partial/corrupt write from a failure mid-scan (e.g. a USB write error). Gating
         // positively on COMPLETED (rather than just excluding Processing) is what keeps an
         // Aborted job's partial output from ever going out as a client-visible 200.
         if (job == null) {
+            logRequest("GET", path, 404, "job=$id missing")
             respond(cout, 404, "text/plain", "Not ready")
             return
         }
         if (job.state != EsclJobState.COMPLETED) {
             val status = if (job.state == EsclJobState.ABORTED) 500 else 404
+            logRequest("GET", path, status, "job=$id state=${job.state}")
             respond(cout, status, "text/plain", "Not ready")
             return
         }
         if (!job.delivered.compareAndSet(false, true)) {
+            logRequest("GET", path, 404, "job=$id already delivered")
             respond(cout, 404, "text/plain", "No more documents")
             return
         }
         if (!job.outputFile.exists()) {
+            logRequest("GET", path, 404, "job=$id output missing")
             respond(cout, 404, "text/plain", "Not ready")
             return
         }
         val bodyBytes = job.outputFile.readBytes()
         try {
+            logRequest("GET", path, 200, "job=$id bytes=${bodyBytes.size}")
             respondWithHeaders(cout, 200, "image/jpeg", "", emptyMap(), bodyBytes = bodyBytes)
         } finally {
             jobs.remove(id, job)
             job.outputFile.delete()
+        }
+    }
+
+    /**
+     * Some Windows eSCL clients request NextDocument immediately after POSTing a scan job,
+     * then poll ScannerStatus/NextDocument in a tight loop while the hardware is still
+     * scanning. Returning 404 for those early reads can make the client conclude that
+     * there is no image to display; it may DELETE the job as soon as status flips to
+     * Completed without ever issuing a successful image fetch.
+     *
+     * Treat NextDocument as a bounded long-poll instead: if the job is still Processing,
+     * hold this request until it becomes terminal (or until the wait budget expires). That
+     * lets the same client request receive the JPEG as soon as the scanner finishes.
+     */
+    private fun waitForNextDocumentJob(id: String): EsclJob? {
+        val deadline = System.currentTimeMillis() + nextDocumentWaitTimeoutMs.coerceAtLeast(0)
+        while (true) {
+            val job = jobs[id] ?: return null
+            if (job.state != EsclJobState.PROCESSING) return job
+            if (System.currentTimeMillis() >= deadline) return job
+            try {
+                Thread.sleep(nextDocumentPollDelayMs.coerceAtLeast(1))
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return job
+            }
         }
     }
 
@@ -244,11 +303,30 @@ class LocalEsclServer(
         val trackedJob = jobs.remove(id)
         val output = trackedJob?.outputFile ?: File(spoolDir, "escl-job-$id.jpg")
         if (output.exists()) output.delete()
+        logRequest("DELETE", path, 200, "job=$id tracked=${trackedJob != null} state=${trackedJob?.state}")
         respond(cout, 200, "text/plain", "")
     }
 
-    private fun currentJobInfo(): List<EsclJobInfo> =
-        currentJob.get()?.let { listOf(EsclJobInfo(it.id, it.state.toWireString())) } ?: emptyList()
+    private fun currentJobInfo(): List<EsclJobInfo> {
+        val trackedJobs = jobs.values.associateBy { it.id }.toMutableMap()
+        currentJob.get()?.let { trackedJobs.putIfAbsent(it.id, it) }
+        return trackedJobs.values
+            .sortedBy { it.id.toInt() }
+            .map { job ->
+                EsclJobInfo(
+                    id = job.id,
+                    state = job.state.toWireString(),
+                    ageSeconds = ((System.currentTimeMillis() - job.createdAtMs) / 1000).coerceAtLeast(0),
+                    imagesCompleted = if (job.state == EsclJobState.COMPLETED) 1 else 0,
+                    imagesToTransfer = if (job.state == EsclJobState.COMPLETED && !job.delivered.get()) 1 else 0,
+                    stateReason = when (job.state) {
+                        EsclJobState.PROCESSING -> "JobScanning"
+                        EsclJobState.COMPLETED -> "JobCompletedSuccessfully"
+                        EsclJobState.ABORTED -> "ImageTransferError"
+                    },
+                )
+            }
+    }
 
     private fun parseStartLine(startLine: String): Pair<String, String>? {
         val parts = startLine.split(" ")
@@ -258,6 +336,11 @@ class LocalEsclServer(
 
     private fun respond(cout: BufferedOutputStream, status: Int, contentType: String, body: String) =
         respondWithHeaders(cout, status, contentType, body, emptyMap())
+
+    private fun logRequest(method: String, path: String, status: Int, detail: String = "") {
+        val suffix = if (detail.isBlank()) "" else " $detail"
+        Log.i("LocalEsclServer", "eSCL $method $path -> $status$suffix")
+    }
 
     private fun respondWithHeaders(
         cout: BufferedOutputStream,

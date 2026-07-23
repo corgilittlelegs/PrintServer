@@ -73,6 +73,19 @@ class LedmRequestsTest {
     }
 
     @Test
+    fun `builds the create-job XML body with explicit brightness and contrast`() {
+        val body = LedmRequests.createJobBody(
+            xResolution = 300, yResolution = 300,
+            xStart = 0, width = 2550, yStart = 0, height = 3300,
+            colorSpace = "Color",
+            brightness = 1200,
+            contrast = 800,
+        )
+        assertTrue(body.contains("<Brightness>1200</Brightness>"))
+        assertTrue(body.contains("<Contrast>800</Contrast>"))
+    }
+
+    @Test
     fun `builds the create-job XML body with grayscale color space`() {
         val body = LedmRequests.createJobBody(
             xResolution = 300, yResolution = 300,

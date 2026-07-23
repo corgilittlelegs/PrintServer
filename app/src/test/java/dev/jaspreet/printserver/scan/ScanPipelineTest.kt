@@ -86,6 +86,39 @@ class ScanPipelineTest {
     }
 
     @Test
+    fun `waits for the scanner to become idle before creating a new job`() {
+        var statusPolls = 0
+        val fakeJpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01, 0xFF.toByte(), 0xD9.toByte())
+        val transport = FakePrinterTransport { reqBytes ->
+            val req = String(reqBytes, Charsets.US_ASCII)
+            when {
+                req.startsWith("GET /Scan/Status") -> {
+                    statusPolls++
+                    val state = if (statusPolls == 1) "BusyWithScanJob" else "Idle"
+                    chunkedResponse("200 OK", body = "<ScannerStatus><ScannerState>$state</ScannerState></ScannerStatus>")
+                }
+                req.startsWith("POST /Scan/Jobs") ->
+                    createdJobResponse("/Scan/Jobs/JobList/1")
+                req.startsWith("GET /Scan/Jobs/JobList/1 ") ->
+                    chunkedResponse(
+                        "200 OK",
+                        body = "<PreScanPage><PageState>ReadyToUpload</PageState>" +
+                            "<BinaryURL>/Scan/Jobs/JobList/1/Pages/1/Image</BinaryURL></PreScanPage>",
+                    )
+                req.startsWith("GET /Scan/Jobs/JobList/1/Pages/1/Image") ->
+                    binaryChunkedResponse("200 OK", fakeJpeg)
+                else -> throw IOException("unexpected request: $req")
+            }
+        }
+
+        val output = createTempFile().toFile()
+        ScanPipeline({ NonClosingTransport(transport) }, pollDelayMs = 0).scan(output)
+
+        assertArrayEquals(fakeJpeg, output.readBytes())
+        assertTrue("scanner status should have been retried", statusPolls >= 2)
+    }
+
+    @Test
     fun `throws when no document is on the flatbed`() {
         val transport = FakePrinterTransport { reqBytes ->
             val req = String(reqBytes, Charsets.US_ASCII)
@@ -142,7 +175,7 @@ class ScanPipelineTest {
     }
 
     @Test
-    fun `passes the requested resolution and grayscale color space into the create-job request`() {
+    fun `passes the requested scan settings into the create-job request`() {
         var capturedJobBody = ""
         val fakeJpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01, 0xFF.toByte(), 0xD9.toByte())
         val transport = FakePrinterTransport { reqBytes ->
@@ -167,11 +200,19 @@ class ScanPipelineTest {
         }
 
         val output = createTempFile().toFile()
-        ScanPipeline({ NonClosingTransport(transport) }, pollDelayMs = 0).scan(output, resolution = 600, colorMode = ScanColorMode.GRAYSCALE)
+        ScanPipeline({ NonClosingTransport(transport) }, pollDelayMs = 0).scan(
+            output,
+            resolution = 600,
+            colorMode = ScanColorMode.GRAYSCALE,
+            brightness = 1200,
+            contrast = 800,
+        )
 
         assertTrue(capturedJobBody.contains("<XResolution>600</XResolution>"))
         assertTrue(capturedJobBody.contains("<YResolution>600</YResolution>"))
         assertTrue(capturedJobBody.contains("<ColorSpace>Gray</ColorSpace>"))
+        assertTrue(capturedJobBody.contains("<Brightness>1200</Brightness>"))
+        assertTrue(capturedJobBody.contains("<Contrast>800</Contrast>"))
         // Width/Height are in the scanner's fixed LEDM region coordinate space, not
         // pixels at the selected output DPI. Scaling these by resolution makes the
         // physical carriage scan only a small top-left strip at low DPI.

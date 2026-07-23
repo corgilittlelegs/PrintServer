@@ -62,8 +62,8 @@ object LedmRequests {
         yStart: Int,
         height: Int,
         colorSpace: String,
-        brightness: Int = LEDM_TONE_DEFAULT,
-        contrast: Int = LEDM_TONE_DEFAULT,
+        brightness: Int = ScanTone.DEFAULT,
+        contrast: Int = ScanTone.DEFAULT,
     ): String =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
             "<ScanSettings xmlns=\"http://www.hp.com/schemas/imaging/con/cnx/scan/2008/08/19\">" +
@@ -99,6 +99,4 @@ object LedmRequests {
             "Proxy-Connection: keep-alive\r\n" +
             "Cookie: AccessCounter=new" +
             ZERO_FOOTER
-
-    private const val LEDM_TONE_DEFAULT = 1000
 }

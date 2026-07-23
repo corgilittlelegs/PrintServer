@@ -42,6 +42,7 @@ import dev.jaspreet.printserver.render.PpdAsset
 import dev.jaspreet.printserver.scan.LedmCapabilities
 import dev.jaspreet.printserver.scan.ScanColorMode
 import dev.jaspreet.printserver.scan.ScanPipeline
+import dev.jaspreet.printserver.scan.ScanToneSettingsState
 import dev.jaspreet.printserver.scan.ScannerCapabilities
 import dev.jaspreet.printserver.usb.DeviceId
 import dev.jaspreet.printserver.usb.DeviceIdInfo
@@ -254,7 +255,7 @@ class ServerService : Service() {
                     makeAndModel = caps.makeAndModel,
                     capabilities = liveScanCapabilities,
                     spoolDir = spoolDir,
-                    performScan = { resolution, colorMode, output ->
+                    performScan = { resolution, colorMode, brightness, contrast, output ->
                         update {
                             it.copy(
                                 scanState = ScanState.SCANNING,
@@ -264,7 +265,7 @@ class ServerService : Service() {
                         try {
                             synchronized(usbIoLock) {
                                 closeLegacyTransportForScan()
-                                scanWithCandidateFallback(usb, device, output, resolution, colorMode)
+                                scanWithCandidateFallback(usb, device, output, resolution, colorMode, brightness, contrast)
                             }
                             update {
                                 it.copy(
@@ -283,6 +284,7 @@ class ServerService : Service() {
                             throw e
                         }
                     },
+                    defaultToneSettings = { ScanToneSettingsState.settings.value },
                 ).also { localEsclServer = it }.start(bindAddr)
             } catch (e: Exception) {
                 scanFailureReason = e.message ?: e.javaClass.simpleName
@@ -345,6 +347,8 @@ class ServerService : Service() {
         output: File,
         resolution: Int,
         colorMode: ScanColorMode,
+        brightness: Int,
+        contrast: Int,
     ) {
         val candidates = usb.scanTransportCandidates(device)
         if (candidates.isEmpty()) {
@@ -361,6 +365,8 @@ class ServerService : Service() {
                     output = output,
                     resolution = resolution,
                     colorMode = colorMode,
+                    brightness = brightness,
+                    contrast = contrast,
                     candidateLabel = candidate.label,
                     attempts = 1,
                 )
@@ -425,24 +431,26 @@ class ServerService : Service() {
         output: File,
         resolution: Int,
         colorMode: ScanColorMode,
+        brightness: Int,
+        contrast: Int,
         candidateLabel: String = "default",
         attempts: Int = SCAN_RETRY_ATTEMPTS,
     ) {
         repeat(attempts) { attempt ->
             val startedAt = System.currentTimeMillis()
             try {
-                ScanPipeline(openScanTransport).scan(output, resolution, colorMode)
+                ScanPipeline(openScanTransport).scan(output, resolution, colorMode, brightness, contrast)
                 val outputBytes = validateScanOutput(output)
                 Log.i(
                     TAG,
-                    "scan_diag op=ScanJob candidate=$candidateLabel attempt=${attempt + 1}/$attempts result=success durationMs=${System.currentTimeMillis() - startedAt} resolution=$resolution colorMode=$colorMode outputBytes=$outputBytes",
+                    "scan_diag op=ScanJob candidate=$candidateLabel attempt=${attempt + 1}/$attempts result=success durationMs=${System.currentTimeMillis() - startedAt} resolution=$resolution colorMode=$colorMode brightness=$brightness contrast=$contrast outputBytes=$outputBytes",
                 )
                 return
             } catch (e: Exception) {
                 val reason = e.message ?: e.javaClass.simpleName
                 Log.w(
                     TAG,
-                    "scan_diag op=ScanJob candidate=$candidateLabel attempt=${attempt + 1}/$attempts result=failure durationMs=${System.currentTimeMillis() - startedAt} resolution=$resolution colorMode=$colorMode reason=$reason",
+                    "scan_diag op=ScanJob candidate=$candidateLabel attempt=${attempt + 1}/$attempts result=failure durationMs=${System.currentTimeMillis() - startedAt} resolution=$resolution colorMode=$colorMode brightness=$brightness contrast=$contrast reason=$reason",
                     e,
                 )
                 if (attempt == attempts - 1) throw e

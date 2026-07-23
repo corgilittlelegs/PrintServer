@@ -1,11 +1,24 @@
 package dev.jaspreet.printserver.escl
 
 import dev.jaspreet.printserver.scan.ScanColorMode
+import dev.jaspreet.printserver.scan.ScanTone
 import dev.jaspreet.printserver.scan.ScannerCapabilities
 
-data class EsclScanSettings(val resolution: Int?, val colorMode: ScanColorMode?)
+data class EsclScanSettings(
+    val resolution: Int?,
+    val colorMode: ScanColorMode?,
+    val brightness: Int?,
+    val contrast: Int?,
+)
 
-data class EsclJobInfo(val id: String, val state: String)
+data class EsclJobInfo(
+    val id: String,
+    val state: String,
+    val ageSeconds: Long = 0,
+    val imagesCompleted: Int = 0,
+    val imagesToTransfer: Int = 0,
+    val stateReason: String = "None",
+)
 
 /** Builds/parses eSCL's XML wire format. See this plan's top-level note on fidelity --
  *  these shapes follow public Mopria/AirScan eSCL conventions, validated against a real
@@ -37,25 +50,39 @@ object EsclXml {
             "<scan:SupportedResolutions><scan:DiscreteResolutions>$resolutions</scan:DiscreteResolutions></scan:SupportedResolutions>" +
             "</scan:SettingProfile></scan:SettingProfiles>" +
             "</scan:PlatenInputCaps></scan:Platen>" +
+            rangeXml("BrightnessSupport") +
+            rangeXml("ContrastSupport") +
             "</scan:ScannerCapabilities>"
     }
 
     fun parseScanSettings(xml: String): EsclScanSettings {
-        val resolution = Regex("<scan:XResolution>(\\d+)</scan:XResolution>").find(xml)
-            ?.groupValues?.get(1)?.toIntOrNull()
+        val resolution = intElement(xml, "XResolution")
         val colorMode = when {
             xml.contains("<scan:ColorMode>RGB24</scan:ColorMode>") -> ScanColorMode.COLOR
             xml.contains("<scan:ColorMode>Grayscale8</scan:ColorMode>") -> ScanColorMode.GRAYSCALE
+            xml.contains("<ColorMode>RGB24</ColorMode>") -> ScanColorMode.COLOR
+            xml.contains("<ColorMode>Grayscale8</ColorMode>") -> ScanColorMode.GRAYSCALE
             else -> null
         }
-        return EsclScanSettings(resolution, colorMode)
+        return EsclScanSettings(
+            resolution = resolution,
+            colorMode = colorMode,
+            brightness = intElement(xml, "Brightness"),
+            contrast = intElement(xml, "Contrast"),
+        )
     }
 
     fun scannerStatus(jobs: List<EsclJobInfo>): String {
         val state = if (jobs.any { it.state == "Processing" }) "Processing" else "Idle"
         val jobEntries = jobs.joinToString("") { job ->
             "<scan:JobInfo><pwg:JobUri>/eSCL/ScanJobs/${job.id}</pwg:JobUri>" +
-                "<pwg:JobState>${job.state}</pwg:JobState></scan:JobInfo>"
+                "<pwg:JobUuid>urn:uuid:${job.id}</pwg:JobUuid>" +
+                "<scan:Age>${job.ageSeconds}</scan:Age>" +
+                "<pwg:ImagesCompleted>${job.imagesCompleted}</pwg:ImagesCompleted>" +
+                "<pwg:ImagesToTransfer>${job.imagesToTransfer}</pwg:ImagesToTransfer>" +
+                "<pwg:JobState>${job.state}</pwg:JobState>" +
+                "<pwg:JobStateReasons><pwg:JobStateReason>${job.stateReason}</pwg:JobStateReason></pwg:JobStateReasons>" +
+                "</scan:JobInfo>"
         }
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
             "<scan:ScannerStatus xmlns:scan=\"$SCAN_NS\" xmlns:pwg=\"$PWG_NS\">" +
@@ -69,4 +96,19 @@ object EsclXml {
             "<scan:Jobs>$jobEntries</scan:Jobs>" +
             "</scan:ScannerStatus>"
     }
+
+    private fun rangeXml(name: String): String =
+        "<scan:$name>" +
+            "<scan:Min>${ScanTone.MIN}</scan:Min>" +
+            "<scan:Max>${ScanTone.MAX}</scan:Max>" +
+            "<scan:Normal>${ScanTone.DEFAULT}</scan:Normal>" +
+            "<scan:Step>1</scan:Step>" +
+            "</scan:$name>"
+
+    private fun intElement(xml: String, name: String): Int? =
+        Regex("<(?:[A-Za-z0-9_]+:)?$name>(-?\\d+)</(?:[A-Za-z0-9_]+:)?$name>")
+            .find(xml)
+            ?.groupValues
+            ?.get(1)
+            ?.toIntOrNull()
 }

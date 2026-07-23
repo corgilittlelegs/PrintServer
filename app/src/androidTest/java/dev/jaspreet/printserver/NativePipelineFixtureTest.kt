@@ -37,6 +37,7 @@ class NativePipelineFixtureTest {
             val img = ppm.inputStream().buffered().use { PpmImage.parse(it) }
             val code = HpcupsNative.encode(
                 img.rgb, img.width, img.height, 300, PpdAsset.extract(ctx).absolutePath, pcl.absolutePath,
+                "ColorModel=RGB OutputMode=Normal",
             )
             assertEquals("hpcups should return 0", 0, code)
             assertTrue("PCL output should be non-trivial", pcl.length() > 1024)
