@@ -40,7 +40,9 @@ import dev.jaspreet.printserver.relay.Raw9100Relay
 import dev.jaspreet.printserver.render.NativeRenderingPipeline
 import dev.jaspreet.printserver.render.PpdAsset
 import dev.jaspreet.printserver.scan.LedmCapabilities
+import dev.jaspreet.printserver.scan.ScanColorMode
 import dev.jaspreet.printserver.scan.ScanPipeline
+import dev.jaspreet.printserver.scan.ScannerCapabilities
 import dev.jaspreet.printserver.usb.DeviceId
 import dev.jaspreet.printserver.usb.DeviceIdInfo
 import dev.jaspreet.printserver.usb.UsbPrinterManager
@@ -61,6 +63,7 @@ class ServerService : Service() {
     private var localIppServer: LocalIppServer? = null
     private var localEsclServer: LocalEsclServer? = null
     private val pipelineActive = AtomicBoolean(false)
+    private val usbIoLock = Any()
     @Volatile private var servedDeviceId: Int? = null
 
     private val detachReceiver = object : BroadcastReceiver() {
@@ -165,6 +168,9 @@ class ServerService : Service() {
                 serialNumber = device.serialNumber,
                 vidPid = "%04X:%04X".format(device.vendorId, device.productId),
                 pdls = deviceIdInfo.commands, tier = 1, connectedAt = System.currentTimeMillis(),
+                scanState = ScanState.UNAVAILABLE, scanPort = null,
+                scanFailureReason = "No eSCL scan server is available for Tier 1 IPP-USB printers",
+                scanCapabilities = null,
             )
         }
         notify("Serving ${info.makeAndModel} at ${bindAddr.hostAddress}:$IPP_PORT")
@@ -176,9 +182,9 @@ class ServerService : Service() {
         bindAddr: java.net.Inet4Address,
         deviceIdInfo: DeviceIdInfo,
     ) {
-        val transport = usb.openLegacyTransport(device)
+        val initialLegacyTransport = usb.openLegacyTransport(device)
             ?: return fail("Printer has no usable USB interface")
-        legacyTransport = transport
+        initialLegacyTransport.close()
 
         // Tier-2: the app itself is the IPP printer; rendering happens on-device.
         val ppd = PpdAsset.extract(this)
@@ -189,7 +195,7 @@ class ServerService : Service() {
         // scoped to one startLegacyPipeline run (one sharing session), not the process lifetime.
         val jobActivityIds = java.util.concurrent.ConcurrentHashMap<Int, Int>()
         val queue = JobQueue(
-            pipeline, { transport },
+            pipeline, { legacyTransportFor(usb, device) },
             onPipelineStuck = {
                 update { ServerStatus(message = "Rendering got stuck — restart the app to recover") }
                 stopSelf()
@@ -227,14 +233,17 @@ class ServerService : Service() {
         ipp.start(bindAddr)
 
         // Raw 9100 stays available for PC-driver clients.
-        val relay = Raw9100Relay(RAW_PORT) { transport }.also { rawRelay = it }
+        val relay = Raw9100Relay(RAW_PORT) { legacyTransportFor(usb, device) }.also { rawRelay = it }
         relay.start(bindAddr)
 
         // Scan side (Spec B): open the LEDM scan interface and, if the live ScanCaps
         // query succeeds, start the eSCL server on it. A missing scan interface or a
         // failed capability query just means this printer doesn't support (or we can't
         // yet drive) scanning -- the print pipeline above must not be affected.
-        var liveScanCapabilities = queryScanCapabilitiesWithRetry(usb, device)
+        var scanResult = queryScanCapabilitiesWithRetry(usb, device)
+        var liveScanCapabilities = scanResult.capabilities
+        var scanState = if (liveScanCapabilities != null) ScanState.READY else ScanState.UNAVAILABLE
+        var scanFailureReason = scanResult.failureReason
         if (liveScanCapabilities != null) {
             // Starting the eSCL server (binding ESCL_PORT) is likewise isolated: a
             // bind failure here (e.g. stale TIME_WAIT/address-in-use) must not take
@@ -246,20 +255,41 @@ class ServerService : Service() {
                     capabilities = liveScanCapabilities,
                     spoolDir = spoolDir,
                     performScan = { resolution, colorMode, output ->
-                        // ScanPipeline opens a fresh USB connection per request rather
-                        // than reusing one held open for the service's whole lifetime --
-                        // see ScanPipeline's class doc for why.
-                        val openScanTransport = {
-                            usb.openScanTransport(device)
-                                ?: throw java.io.IOException("Scan interface no longer available")
+                        update {
+                            it.copy(
+                                scanState = ScanState.SCANNING,
+                                scanFailureReason = null,
+                            )
                         }
-                        scanWithRetry(openScanTransport, output, resolution, colorMode)
+                        try {
+                            synchronized(usbIoLock) {
+                                closeLegacyTransportForScan()
+                                scanWithCandidateFallback(usb, device, output, resolution, colorMode)
+                            }
+                            update {
+                                it.copy(
+                                    scanState = ScanState.READY,
+                                    scanFailureReason = null,
+                                )
+                            }
+                        } catch (e: Exception) {
+                            val reason = e.message ?: e.javaClass.simpleName
+                            update {
+                                it.copy(
+                                    scanState = ScanState.FAILED,
+                                    scanFailureReason = reason,
+                                )
+                            }
+                            throw e
+                        }
                     },
                 ).also { localEsclServer = it }.start(bindAddr)
             } catch (e: Exception) {
-                Log.w(TAG, "eSCL server start failed, scan server not started: ${e.message}")
+                scanFailureReason = e.message ?: e.javaClass.simpleName
+                Log.w(TAG, "eSCL server start failed, scan server not started: $scanFailureReason")
                 localEsclServer = null
                 liveScanCapabilities = null
+                scanState = ScanState.FAILED
             }
         }
 
@@ -276,71 +306,202 @@ class ServerService : Service() {
                 it.advertiseEscl(caps.makeAndModel, ESCL_PORT, EsclTxtRecords.forEscl(liveScanCapabilities, caps.makeAndModel))
             }
         }
+        val hostAddress = bindAddr.hostAddress ?: "unknown"
         update {
             it.copy(
                 running = true, printerName = caps.makeAndModel, ippSupported = true,
-                ip = bindAddr.hostAddress, port = IPP_PORT,
-                message = "Serving ${caps.makeAndModel} (on-device rendering)",
+                ip = hostAddress, port = IPP_PORT,
+                message = legacyServingMessage(caps.makeAndModel, scanState, scanFailureReason),
                 manufacturer = deviceIdInfo.manufacturer, model = deviceIdInfo.model,
                 serialNumber = device.serialNumber,
                 vidPid = "%04X:%04X".format(device.vendorId, device.productId),
                 pdls = deviceIdInfo.commands, tier = 2, connectedAt = System.currentTimeMillis(),
+                scanState = scanState,
+                scanPort = if (scanState == ScanState.READY) ESCL_PORT else null,
+                scanFailureReason = scanFailureReason,
+                scanCapabilities = liveScanCapabilities,
             )
         }
-        notify("Serving ${caps.makeAndModel} at ${bindAddr.hostAddress}:$IPP_PORT")
+        notify(legacyNotificationMessage(caps.makeAndModel, hostAddress, scanState, scanFailureReason))
     }
 
-    /** ScanCaps queries against real LEDM-over-USB hardware are intermittently flaky in
-     *  ways not yet fully root-caused (see `LedmCapabilities.query`'s doc comment) --
-     *  a fresh retry very often succeeds where the previous attempt didn't. Bounded so a
-     *  genuinely scan-incapable printer (or one with a truly dead scan interface) still
-     *  fails startup promptly rather than hanging. Each attempt opens and closes its own
-     *  transport (never reuses a failed attempt's connection). */
+    private fun legacyTransportFor(
+        usb: UsbPrinterManager,
+        device: android.hardware.usb.UsbDevice,
+    ): UsbTransport = synchronized(usbIoLock) {
+        legacyTransport ?: (usb.openLegacyTransport(device)
+            ?: throw java.io.IOException("Printer interface no longer available"))
+            .also { legacyTransport = it }
+    }
+
+    private fun closeLegacyTransportForScan() {
+        legacyTransport?.close()
+        legacyTransport = null
+    }
+
+    private fun scanWithCandidateFallback(
+        usb: UsbPrinterManager,
+        device: android.hardware.usb.UsbDevice,
+        output: File,
+        resolution: Int,
+        colorMode: ScanColorMode,
+    ) {
+        val candidates = usb.scanTransportCandidates(device)
+        if (candidates.isEmpty()) {
+            throw java.io.IOException("Scan interface no longer available")
+        }
+        var lastFailure: Exception? = null
+        for (candidate in candidates) {
+            try {
+                Log.i(TAG, "scan_diag candidate=${candidate.label} result=starting")
+                scanWithRetry(
+                    openScanTransport = {
+                        candidate.open() ?: throw java.io.IOException("Scan interface ${candidate.label} unavailable")
+                    },
+                    output = output,
+                    resolution = resolution,
+                    colorMode = colorMode,
+                    candidateLabel = candidate.label,
+                    attempts = 1,
+                )
+                Log.i(TAG, "scan_diag candidate=${candidate.label} result=success")
+                return
+            } catch (e: Exception) {
+                lastFailure = e
+                Log.w(TAG, "scan_diag candidate=${candidate.label} result=failure reason=${e.message ?: e.javaClass.simpleName}", e)
+            }
+        }
+        throw lastFailure ?: java.io.IOException("All scan interfaces failed")
+    }
+
+    /** ScanCaps is a startup probe against a second USB interface, so keep it bounded
+     *  and retryable: a transient open/read failure should not permanently hide scanning,
+     *  but a genuinely scan-incapable printer should still fail startup promptly. Each
+     *  attempt opens and closes its own transport. */
     private fun queryScanCapabilitiesWithRetry(
         usb: UsbPrinterManager,
         device: android.hardware.usb.UsbDevice,
-    ): dev.jaspreet.printserver.scan.ScannerCapabilities? {
+    ): ScanCapsProbeResult {
+        var lastFailure: String? = null
         repeat(RETRY_ATTEMPTS) { attempt ->
+            val startedAt = System.currentTimeMillis()
             try {
-                val capsTransport = usb.openScanTransport(device) ?: return null
+                val capsTransport = usb.openScanTransport(device)
+                    ?: return ScanCapsProbeResult(
+                        capabilities = null,
+                        failureReason = "Scan interface unavailable",
+                    )
                 try {
-                    return LedmCapabilities.query(capsTransport)
+                    val caps = LedmCapabilities.query(capsTransport)
+                    Log.i(
+                        TAG,
+                        "scan_diag op=ScanCaps attempt=${attempt + 1}/$RETRY_ATTEMPTS result=success durationMs=${System.currentTimeMillis() - startedAt}",
+                    )
+                    return ScanCapsProbeResult(capabilities = caps, failureReason = null)
                 } finally {
                     capsTransport.close()
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "ScanCaps query attempt ${attempt + 1}/$RETRY_ATTEMPTS failed: ${e.message}")
+                lastFailure = e.message ?: e.javaClass.simpleName
+                Log.w(
+                    TAG,
+                    "scan_diag op=ScanCaps attempt=${attempt + 1}/$RETRY_ATTEMPTS result=failure durationMs=${System.currentTimeMillis() - startedAt} reason=$lastFailure",
+                    e,
+                )
                 if (attempt < RETRY_ATTEMPTS - 1) Thread.sleep(RETRY_DELAY_MS)
             }
         }
-        Log.w(TAG, "ScanCaps query failed after $RETRY_ATTEMPTS attempts, scan server not started")
-        return null
+        val failure = lastFailure ?: "ScanCaps query failed"
+        Log.w(TAG, "ScanCaps query failed after $RETRY_ATTEMPTS attempts, scan server not started: $failure")
+        return ScanCapsProbeResult(capabilities = null, failureReason = failure)
     }
 
-    /** HP's own documented guidance for LEDM "Channel write error" -- a limitation of
-     *  the device's I/O interface, not a driver bug -- is "retry the same operation
-     *  after a few seconds" (HPLIP Known Issues). Every failure observed in hardware
-     *  testing happens before any physical page-feed/scan starts (status check,
-     *  create-job response, or an explicit Busy reply), so retrying the whole scan from
-     *  scratch is safe: nothing physical has happened yet to redo or duplicate. Bounded
-     *  so a genuinely broken scan path still fails within a few seconds rather than
-     *  retrying forever against, e.g., a jammed or disconnected scanner. */
+    /** Runs one scan attempt and records structured diagnostics. The caller controls
+     *  [attempts]; production uses one attempt per selected scan interface so a physical
+     *  scan is never duplicated after the carriage has started moving, while tests can
+     *  still exercise bounded retry behavior through this seam. */
     private fun scanWithRetry(
-        openScanTransport: () -> dev.jaspreet.printserver.usb.UsbTransport,
-        output: java.io.File,
+        openScanTransport: () -> UsbTransport,
+        output: File,
         resolution: Int,
-        colorMode: dev.jaspreet.printserver.scan.ScanColorMode,
+        colorMode: ScanColorMode,
+        candidateLabel: String = "default",
+        attempts: Int = SCAN_RETRY_ATTEMPTS,
     ) {
-        repeat(SCAN_RETRY_ATTEMPTS) { attempt ->
+        repeat(attempts) { attempt ->
+            val startedAt = System.currentTimeMillis()
             try {
                 ScanPipeline(openScanTransport).scan(output, resolution, colorMode)
+                val outputBytes = validateScanOutput(output)
+                Log.i(
+                    TAG,
+                    "scan_diag op=ScanJob candidate=$candidateLabel attempt=${attempt + 1}/$attempts result=success durationMs=${System.currentTimeMillis() - startedAt} resolution=$resolution colorMode=$colorMode outputBytes=$outputBytes",
+                )
                 return
             } catch (e: Exception) {
-                if (attempt == SCAN_RETRY_ATTEMPTS - 1) throw e
-                Log.w(TAG, "Scan attempt ${attempt + 1}/$SCAN_RETRY_ATTEMPTS failed, retrying: ${e.message}")
+                val reason = e.message ?: e.javaClass.simpleName
+                Log.w(
+                    TAG,
+                    "scan_diag op=ScanJob candidate=$candidateLabel attempt=${attempt + 1}/$attempts result=failure durationMs=${System.currentTimeMillis() - startedAt} resolution=$resolution colorMode=$colorMode reason=$reason",
+                    e,
+                )
+                if (attempt == attempts - 1) throw e
                 Thread.sleep(SCAN_RETRY_DELAY_MS)
             }
         }
+    }
+
+    private fun validateScanOutput(output: File): Long {
+        val size = output.length()
+        if (size < MIN_VALID_SCAN_BYTES) {
+            throw java.io.IOException("Scan output too small: $size bytes")
+        }
+        val header = output.inputStream().use { input ->
+            ByteArray(3).also { bytes ->
+                val read = input.read(bytes)
+                if (read < bytes.size) throw java.io.IOException("Scan output truncated: $read header bytes")
+            }
+        }
+        val isJpeg = (header[0].toInt() and 0xFF) == 0xFF &&
+            (header[1].toInt() and 0xFF) == 0xD8 &&
+            (header[2].toInt() and 0xFF) == 0xFF
+        if (!isJpeg) {
+            throw java.io.IOException(
+                "Scan output is not JPEG: header=" +
+                    header.joinToString("") { "%02x".format(it.toInt() and 0xFF) },
+            )
+        }
+        return size
+    }
+
+    private data class ScanCapsProbeResult(
+        val capabilities: ScannerCapabilities?,
+        val failureReason: String?,
+    )
+
+    private fun legacyServingMessage(
+        makeAndModel: String,
+        scanState: ScanState,
+        scanFailureReason: String?,
+    ): String = when (scanState) {
+        ScanState.READY -> "Serving $makeAndModel (printing and scanning)"
+        ScanState.FAILED -> "Serving $makeAndModel; scanning failed: ${scanFailureReason ?: "unknown error"}"
+        ScanState.UNAVAILABLE -> "Serving $makeAndModel; scanning unavailable: ${scanFailureReason ?: "not detected"}"
+        ScanState.STARTING -> "Serving $makeAndModel; scanning starting"
+        ScanState.SCANNING -> "Serving $makeAndModel; scanning"
+    }
+
+    private fun legacyNotificationMessage(
+        makeAndModel: String,
+        hostAddress: String,
+        scanState: ScanState,
+        scanFailureReason: String?,
+    ): String = when (scanState) {
+        ScanState.READY -> "Printing ready at $hostAddress:$IPP_PORT; scanning ready at $hostAddress:$ESCL_PORT"
+        ScanState.FAILED -> "Printing ready; scanning failed: ${scanFailureReason ?: "unknown error"}"
+        ScanState.UNAVAILABLE -> "Printing ready; scanning unavailable: ${scanFailureReason ?: "not detected"}"
+        ScanState.STARTING -> "Printing ready; scanning starting for $makeAndModel"
+        ScanState.SCANNING -> "Printing ready; scanning active for $makeAndModel"
     }
 
     private fun fail(message: String) {
@@ -407,5 +568,6 @@ class ServerService : Service() {
         private const val RETRY_DELAY_MS = 400L
         private const val SCAN_RETRY_ATTEMPTS = 3
         private const val SCAN_RETRY_DELAY_MS = 5000L // HPLIP's own guidance: "retry after a few seconds"
+        private const val MIN_VALID_SCAN_BYTES = 1024L
     }
 }

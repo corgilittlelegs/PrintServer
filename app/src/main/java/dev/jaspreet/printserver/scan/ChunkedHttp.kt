@@ -10,6 +10,17 @@ object ChunkedHttp {
     /** Reads the status line and headers up to (not including) the blank line. */
     fun readHeader(reader: PullReader): String {
         val header = StringBuilder()
+        var skippedLines = 0
+        while (true) {
+            val line = reader.readLine()
+            if (line.startsWith("HTTP/1.1")) {
+                header.append(line).append("\r\n")
+                break
+            }
+            if (++skippedLines > MAX_HEADER_SYNC_LINES) {
+                throw java.io.IOException("HTTP header not found")
+            }
+        }
         while (true) {
             val line = reader.readLine()
             if (line.isEmpty()) break
@@ -17,6 +28,9 @@ object ChunkedHttp {
         }
         return header.toString()
     }
+
+    fun isCreated(header: String): Boolean =
+        header.lineSequence().firstOrNull()?.startsWith("HTTP/1.1 201 ") == true
 
     /** Reads a chunked body: repeated (hex-size line, that many bytes, trailing CRLF),
      *  terminated by a zero-size chunk. */
@@ -33,4 +47,6 @@ object ChunkedHttp {
         }
         return out.toByteArray()
     }
+
+    private const val MAX_HEADER_SYNC_LINES = 32
 }

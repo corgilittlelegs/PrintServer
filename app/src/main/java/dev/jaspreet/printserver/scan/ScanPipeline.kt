@@ -30,8 +30,8 @@ class ScanPipeline(
 ) {
     companion object {
         private const val DEFAULT_RESOLUTION = 300
-        private const val DEFAULT_WIDTH = 2550  // US Letter width at 300dpi -- placeholder, see Task 6
-        private const val DEFAULT_HEIGHT = 3300 // US Letter height at 300dpi -- placeholder, see Task 6
+        private const val DEFAULT_WIDTH = 2550
+        private const val DEFAULT_HEIGHT = 3508
         private const val READ_CHUNK = 16384
         private const val JOB_START_SETTLE_MS = 1500L
     }
@@ -49,11 +49,12 @@ class ScanPipeline(
             ScanColorMode.COLOR -> "Color"
             ScanColorMode.GRAYSCALE -> "Gray"
         }
-        // Width/Height are pixel counts at the request's XResolution/YResolution, not a
-        // resolution-independent physical size, so the 300dpi-baseline defaults above must
-        // be scaled to the actually-requested resolution to keep capturing the full page.
-        val width = DEFAULT_WIDTH * resolution / DEFAULT_RESOLUTION
-        val height = DEFAULT_HEIGHT * resolution / DEFAULT_RESOLUTION
+        // HPLIP's bb_ledm.c sends Width/Height in the device's fixed LEDM scan-region
+        // coordinate space, independent of XResolution/YResolution. The DeskJet 2300
+        // advertises 2550x3508 from /Scan/ScanCaps even when 75dpi is selected; scaling
+        // this by DPI makes the carriage scan only a top-left strip (~10-25% of the bed).
+        val width = DEFAULT_WIDTH
+        val height = DEFAULT_HEIGHT
         val jobBody = LedmRequests.createJobBody(
             resolution, resolution, 0, width, 0, height, colorSpace,
         )
@@ -63,7 +64,9 @@ class ScanPipeline(
         val jobUrl = withTransport { transport ->
             val reader = send(transport, jobHeader.toByteArray(Charsets.UTF_8), jobBodyBytes, footerBytes)
             val header = ChunkedHttp.readHeader(reader)
-            ChunkedHttp.readChunkedBody(reader) // body unused, only the Location header matters
+            if (!ChunkedHttp.isCreated(header)) {
+                ChunkedHttp.readChunkedBody(reader) // body unused, only the Location header matters
+            }
             LedmResponses.parseLocationHeader(header)
                 ?: throw IOException("No Location header in create-job response")
         }

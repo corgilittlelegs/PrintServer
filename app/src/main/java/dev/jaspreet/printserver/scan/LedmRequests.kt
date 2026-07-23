@@ -62,6 +62,8 @@ object LedmRequests {
         yStart: Int,
         height: Int,
         colorSpace: String,
+        brightness: Int = LEDM_TONE_DEFAULT,
+        contrast: Int = LEDM_TONE_DEFAULT,
     ): String =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
             "<ScanSettings xmlns=\"http://www.hp.com/schemas/imaging/con/cnx/scan/2008/08/19\">" +
@@ -78,7 +80,7 @@ object LedmRequests {
             "<InputSource>Platen</InputSource>" +
             "<InputSourceType>Platen</InputSourceType>" +
             "<GrayRendering>NTSC</GrayRendering>" +
-            "<ToneMap><Gamma>0</Gamma><Brightness>0</Brightness><Contrast>0</Contrast>" +
+            "<ToneMap><Gamma>0</Gamma><Brightness>$brightness</Brightness><Contrast>$contrast</Contrast>" +
             "<Highlite>0</Highlite><Shadow>0</Shadow></ToneMap>" +
             "<ContentType>Photo</ContentType></ScanSettings>"
 
@@ -97,4 +99,6 @@ object LedmRequests {
             "Proxy-Connection: keep-alive\r\n" +
             "Cookie: AccessCounter=new" +
             ZERO_FOOTER
+
+    private const val LEDM_TONE_DEFAULT = 1000
 }

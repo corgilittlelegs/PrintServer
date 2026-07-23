@@ -5,122 +5,99 @@
 
 ## Executive summary
 
-The eSCL server implementation is functionally present and its JVM tests pass, but scan
-availability and scan failures are almost invisible to the user. The service can be shown
-as successfully running for printing while the scanner was never started. On the tested
-hardware, the remaining failures are non-deterministic USB LEDM transport failures rather
-than a known eSCL protocol defect.
+Scanning now works against the tested HP DeskJet 2300-series MFP through macOS Image Capture.
+The original failures were not one single eSCL issue; they were a stack of LEDM-over-USB and
+eSCL lifecycle mismatches:
 
-The immediate work should therefore be observability and reproducible hardware diagnosis,
-not further speculative changes to HTTP framing or retry loops.
+- The app selected the wrong HP vendor-specific USB interface for scan traffic.
+- The LEDM response parser did not fully match HPLIP's HTTP behavior.
+- The app sent DPI-scaled scan regions, causing the scanner to capture only a small strip of
+  the platen.
+- The app sent LEDM brightness/contrast as `0/0`, which made output look dim; HPLIP's neutral
+  LEDM defaults are `1000/1000`.
+- The eSCL `NextDocument` endpoint allowed the same completed JPEG to be fetched repeatedly,
+  so Image Capture could save many duplicate files without triggering a new hardware scan.
 
-## What is already fixed
+After these fixes, hardware tests produced:
 
-The following earlier protocol issues are fixed in the current source:
+- 75 dpi overview/full-platen scan: approximately 34-55 KB JPEG, around 5 seconds.
+- 300 dpi scan: approximately 450 KB from the app and approximately 720 KB once saved by
+  Image Capture, around 18 seconds.
 
-- The `_uscan._tcp` TXT record advertises `rs=eSCL`, matching the served paths.
-- `ScannerStatus` reports the required `pwg:State` element.
-- eSCL advertises version `2.0`, not HP's unrelated LEDM protocol version.
-- Live scan capabilities parse the actual nested LEDM resolution XML.
-- Requested scan width and height scale with requested resolution.
-- The scan path clears endpoint halt state, opens fresh USB connections per logical LEDM
-  operation, uses bounded capability/scan retries, and includes short settle delays.
+## Root causes and fixes
 
-These changes are covered by JVM tests and were sufficient for macOS Image Capture to
-discover the scanner, fetch capabilities, confirm it is idle, and submit scan jobs.
-
-## Current failure modes
-
-| Symptom | Current behavior | Root cause / interpretation |
+| Area | Root cause | Fix |
 | --- | --- | --- |
-| The app says it is serving, but no scanner appears on the network | The ScanCaps probe fails four times; printing continues and eSCL is not started or advertised | Expected fail-soft design, but not surfaced in UI or notification |
-| Scanner appears but a submitted scan fails | eSCL job becomes `Aborted`; client gets an error instead of an image | LEDM bulk USB request/response failure, observed at inconsistent stages |
-| Some attempts begin physical scanning then fail | Whole scan retries twice more after a five-second pause | The observed failure is non-deterministic; no deterministic protocol point has been isolated |
-| User expects a Scan button in the Android app | No local scan UI exists | The app only exposes a network eSCL scanner on port 8632 |
+| USB interface selection | The implementation treated vendor-specific `ff/4/1` as the LEDM scan channel. HPLIP maps LEDM/eSCL scan to `ff/cc/0`; `ff/4/1` is EWS/LEDM. | `ScanUsb.isLedmScan()` now requires class `255`, subclass `204`, protocol `0`. |
+| LEDM HTTP parsing | Some printer responses can include stale/preamble bytes before the next `HTTP/1.1` status line; POST `/Scan/Jobs` can return a bodyless `201 Created`. | `ChunkedHttp.readHeader()` resynchronizes to `HTTP/1.1`; `ScanPipeline` skips chunked-body reads for `201 Created`. |
+| USB session lifecycle | Holding the print USB interface open while scanning can interfere with the scan interface on this composite device. | Tier 2 print transport is opened lazily and closed before a scan starts; scan requests open fresh transports per logical LEDM operation. |
+| Endpoint control traffic | The app sent endpoint-clear control transfers on the scan interface. HPLIP 3.24.4 has analogous clear-halt calls commented out. | Scan interface opens skip endpoint-clear recovery; print paths keep best-effort recovery. |
+| Scan region size | Width/Height were scaled by selected DPI. On this device, `/Scan/ScanCaps` reports fixed LEDM scan-region units (`2550x3508`) independent of DPI. At 75 dpi, scaling requested only a top-left strip. | `ScanPipeline` now sends full fixed region dimensions (`2550x3508`) regardless of DPI. |
+| Tone defaults | The app hardcoded brightness/contrast as `0/0`, but HPLIP LEDM defaults are `1000/1000` on a `0..2000` scale. | `LedmRequests.createJobBody()` now defaults brightness and contrast to `1000`. |
+| eSCL document lifecycle | Completed jobs could serve `NextDocument` repeatedly. Image Capture interpreted repeated fetches as duplicate scans/saves. | `LocalEsclServer` now serves a completed job's `NextDocument` once, then removes the job and deletes the spool file. |
+| User visibility | Scan readiness/failure was hidden while print service appeared healthy. | `ServerStatus` now tracks scan state, port, failure reason, and capabilities; UI and notification expose scan status. |
 
-The hardware-debugging record reports failures on status, job creation, polling, and image
-fetch across different attempts—even after USB replug and printer power cycle. That pattern
-does not support changing one parser or one request template as a reliable fix.
+## HPLIP findings used
 
-## Recommended fixes, in priority order
+Reference source: HPLIP 3.24.4.
 
-### 1. Make scan availability visible
+- `scan/sane/bb_ledm.c`
+  - Defines the LEDM request shapes used here: `GET /Scan/ScanCaps`, `GET /Scan/Status`,
+    `POST /Scan/Jobs`, `GET <job-url>`, and `GET <BinaryURL>`.
+  - Uses `CompressionQFactor=15`, `ContentType=Photo`, `GrayRendering=NTSC`.
+  - Passes brightness/contrast variables into `<ToneMap>`.
+- `scan/sane/ledmi.h`
+  - Defines LEDM brightness and contrast ranges as `0..2000`, default `1000`.
+- `io/hpmud/hpmudi.h`, `io/hpmud/hpmud.c`, `io/hpmud/musb.c`
+  - Map `HPMUD_LEDM_SCAN_CHANNEL` and `HPMUD_ESCL_SCAN_CHANNEL` to the `ff/cc/0` USB
+    composite interface.
+  - Map `HPMUD_EWS_LEDM_CHANNEL` to `ff/4/1`.
+- `scan/sane/http.c`
+  - Resynchronizes response parsing to a real `HTTP/1.1` status line.
+  - Treats bodyless `201 Created` responses as valid.
 
-Add explicit scan fields to `ServerStatus` and show them in the main UI and foreground
-notification:
+## Current validation
 
-- `scanState`: `Unavailable`, `Starting`, `Ready`, `Scanning`, or `Failed`.
-- `scanPort`: `8632` when ready.
-- `scanFailureReason`: the final capability-probe error or latest failed scan error.
-- `scanCapabilities`: detected resolutions and color modes, when available.
+Automated:
 
-This is the highest-value code change. It turns the current silent failure into an actionable
-status such as: “Printing ready; scanning unavailable: ScanCaps USB read timed out.”
+```sh
+./gradlew :app:testDebugUnitTest
+./gradlew :app:assembleDebug
+```
 
-### 2. Preserve structured diagnostics
+Both passed on 2026-07-23 after the scan fixes.
 
-Record the operation, attempt number, USB interface ID, endpoint addresses, elapsed time,
-HTTP status line, and response framing result for every LEDM request. Do not log document
-content or JPEG bytes. Surface the most recent failure in the UI and retain a small bounded
-history for export through `adb logcat`.
+Hardware:
 
-The current code logs exception messages, but it discards each HTTP response status line and
-does not identify which LEDM operation failed. That makes hardware failures hard to compare.
+- Installed the debug APK over wireless ADB to device `adb-R9ZX70CTLXN-SzU8Cy._adb-tls-connect._tcp`.
+- Confirmed USB descriptor exposes:
+  - `ff/cc/0` interface 0 for LEDM scan.
+  - `7/1/2` interface 1 for legacy print.
+  - two `ff/4/1` interfaces that should not be used for scan data.
+- Confirmed macOS Image Capture discovers `PrintServer Bridge`.
+- Confirmed Image Capture can create saved JPEG output.
+- Confirmed duplicate-save loop stopped after one-shot `NextDocument`.
+- Confirmed neutral `1000/1000` brightness/contrast produces a much brighter 300 dpi scan.
 
-### 3. Add a dedicated device-level scan smoke test
+## Remaining polish
 
-Add an `androidTest` that runs `ScanPipeline` against the connected MFP and verifies that the
-output is a non-trivial JPEG (magic bytes plus a reasonable minimum size). It should be
-hardware-only and skipped/clearly failed when the expected scan interface is absent.
+1. **Orientation.** The saved image is valid but upside down relative to expected document
+   orientation. Next likely fix is to map eSCL orientation into LEDM coordinates or rotate
+   the served JPEG when the client requests a specific orientation.
+2. **Scan settings UI/API.** Brightness and contrast are now protocol parameters with HPLIP
+   defaults; they could be exposed later if needed.
+3. **Manual matrix.** Re-run a small hardware matrix before declaring scan feature complete:
+   - 75 dpi overview.
+   - 300 dpi color JPEG.
+   - 300 dpi grayscale JPEG.
+   - Stop/start Android service, then scan again.
+   - Print after scanning to verify lazy print transport reopen.
 
-JVM tests validate the protocol logic using scripted data; they cannot validate Android USB
-host-controller behavior.
+## Files touched by the fix
 
-### 4. Capture a known-good and failing USB exchange
-
-This is the required step before changing LEDM transport behavior further. Capture USB traffic
-from a Linux host running HPLIP against the same printer, then compare it to a rooted Android
-`usbmon` capture (or equivalent). Determine whether Android receives no bytes, receives an
-incomplete response, or loses framing after a specific operation.
-
-Do not reintroduce a tight zero-byte-read retry loop: testing already showed that it made this
-hardware consistently worse.
-
-### 5. Isolate the physical USB path
-
-Test a known-good powered OTG adapter/cable and another Android host device. The remaining
-failure pattern is consistent with host/cable signal or power instability during bulk traffic,
-especially around scanner-motor startup. This is a diagnostic experiment, not a code fix.
-
-## What not to change without evidence
-
-- Do not alter the unusual LEDM request footer or HTTP framing: it mirrors HPLIP's working
-  implementation and has already reached actual scan-job submission.
-- Do not increase retries indefinitely; that hides the real failure and can duplicate work.
-- Do not change eSCL discovery/XML fields that have already been proven with Image Capture.
-- Do not treat a running print server as proof that a scan server is running.
-
-## Validation checklist
-
-1. Start the service with the MFP connected and run:
-
-   ```sh
-   adb logcat -c
-   adb logcat -s ServerService LocalEsclServer AndroidRuntime
-   ```
-
-2. Confirm the app reports **Scan ready** and port **8632**; otherwise capture the displayed
-   capability-probe reason.
-3. From macOS, confirm discovery with `dns-sd -B _uscan._tcp`.
-4. In Image Capture or Preview, scan one flatbed page at 300 dpi, then 600 dpi.
-5. On failure, retain the structured operation/attempt logs and note whether the scanner lamp
-   or carriage started moving.
-6. Repeat with a different OTG adapter/cable before changing transport code.
-
-## Evidence
-
-- `app/src/main/java/dev/jaspreet/printserver/service/ServerService.kt`
-- `app/src/main/java/dev/jaspreet/printserver/scan/ScanPipeline.kt`
-- `app/src/main/java/dev/jaspreet/printserver/usb/AndroidUsbTransport.kt`
-- `docs/superpowers/testing/2026-07-20-escl-scan-hardware-debugging.md`
-- `./gradlew :app:testDebugUnitTest` — passing on 2026-07-23.
+- `app/src/main/java/dev/jaspreet/printserver/scan/`
+- `app/src/main/java/dev/jaspreet/printserver/escl/LocalEsclServer.kt`
+- `app/src/main/java/dev/jaspreet/printserver/usb/`
+- `app/src/main/java/dev/jaspreet/printserver/service/`
+- `app/src/main/java/dev/jaspreet/printserver/ui/PrintServerApp.kt`
+- Matching JVM tests under `app/src/test/`.

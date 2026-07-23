@@ -11,6 +11,11 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import java.io.IOException
 
+data class ScanTransportCandidate(
+    val label: String,
+    val open: () -> UsbTransport?,
+)
+
 class UsbPrinterManager(private val context: Context) {
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
@@ -80,21 +85,42 @@ class UsbPrinterManager(private val context: Context) {
             .firstOrNull { IppUsb.isLegacyPrinter(it.interfaceClass, it.interfaceSubclass, it.interfaceProtocol) }
             ?.let { openInterface(device, it) }
 
-    /** Opens the first LEDM scan-data interface (255/4), for the scan pipeline.
-     *  Hardware testing found the LEDM interface intermittently fails the very first
-     *  request on a freshly claimed connection even with endpoint halt cleared -- a
-     *  short settle delay after claim, before any traffic, measurably reduced (though
-     *  did not eliminate) this. Scoped to just the scan interface, not the shared
-     *  [openInterface] path, since the print interfaces don't show this issue and
-     *  ScanPipeline now opens a fresh connection per LEDM request (see its class doc),
-     *  so this delay is paid once per request, not once per whole scan. */
+    /** Opens HPLIP's LEDM scan channel interface (255/204/0), for the scan pipeline.
+     *  Scan requests use a fresh USB connection per logical LEDM operation (see
+     *  ScanPipeline's class doc), with a small post-claim settle delay scoped to this
+     *  scan path only. */
     fun openScanTransport(device: UsbDevice): UsbTransport? =
+        scanTransportCandidates(device).firstNotNullOfOrNull { it.open() }
+
+    fun scanTransportCandidates(device: UsbDevice): List<ScanTransportCandidate> {
+        val candidates = mutableListOf<ScanTransportCandidate>()
         device.interfaces()
-            .firstOrNull { ScanUsb.isLedmScan(it.interfaceClass, it.interfaceSubclass) }
-            ?.let { openInterface(device, it) }
+            .filter { ScanUsb.isLedmScan(it.interfaceClass, it.interfaceSubclass, it.interfaceProtocol) }
+            .forEach { iface ->
+                candidates += ScanTransportCandidate("ff/cc/0 iface=${iface.id}") {
+                    openScanInterface(device, iface)
+                }
+            }
+        return candidates
+    }
+
+    private fun openScanInterface(device: UsbDevice, iface: UsbInterface): UsbTransport? =
+        openInterface(
+            device = device,
+            iface = iface,
+            clearEndpointHaltOnOpen = false,
+            zeroReadRetries = SCAN_ZERO_READ_RETRIES,
+            zeroReadDelayMs = SCAN_ZERO_READ_DELAY_MS,
+        )
             ?.also { Thread.sleep(SCAN_INTERFACE_SETTLE_MS) }
 
-    private fun openInterface(device: UsbDevice, iface: UsbInterface): UsbTransport? {
+    private fun openInterface(
+        device: UsbDevice,
+        iface: UsbInterface,
+        clearEndpointHaltOnOpen: Boolean = true,
+        zeroReadRetries: Int = 0,
+        zeroReadDelayMs: Long = 0,
+    ): UsbTransport? {
         var outEp: UsbEndpoint? = null
         var inEp: UsbEndpoint? = null
         for (i in 0 until iface.endpointCount) {
@@ -109,18 +135,16 @@ class UsbPrinterManager(private val context: Context) {
             connection.close()
             throw IOException("claimInterface failed for interface ${iface.id}")
         }
-        // HPLIP's own USB channel layer (io/hpmud/musb.c's musb_raw_channel_close)
-        // clears both bulk endpoints' halt condition -- resetting the host/device data
-        // toggle synchronization -- on every channel close. claimInterface() alone does
-        // not do this; a channel left in a non-zero toggle state from a prior session
-        // (e.g. this app force-killed mid-transfer) can desync the very first read/write
-        // on a freshly claimed interface. Android's UsbDeviceConnection has no clearHalt
-        // API (unlike libusb), so this issues the same standard CLEAR_FEATURE(ENDPOINT_HALT)
-        // control transfer by hand, on both endpoints, right after claim -- re-establishing
-        // a known-clean DATA0 state before any traffic flows.
-        clearEndpointHalt(connection, outEp)
-        clearEndpointHalt(connection, inEp)
-        return AndroidUsbTransport(connection, iface, outEp, inEp)
+        // Best-effort endpoint halt recovery for print paths. Do not apply it to the
+        // LEDM scan interface: HPLIP 3.24.4's analogous libusb_clear_halt calls in
+        // musb_raw_channel_close are intentionally commented out, and real DeskJet
+        // 2300-series hardware proved sensitive to extra control traffic in the scan
+        // channel lifecycle.
+        if (clearEndpointHaltOnOpen) {
+            clearEndpointHalt(connection, outEp)
+            clearEndpointHalt(connection, inEp)
+        }
+        return AndroidUsbTransport(connection, iface, outEp, inEp, zeroReadRetries, zeroReadDelayMs)
     }
 
     /** Standard USB CLEAR_FEATURE(ENDPOINT_HALT) request (USB 2.0 spec §9.4.1), sent by
@@ -144,5 +168,7 @@ class UsbPrinterManager(private val context: Context) {
     companion object {
         const val ACTION_USB_PERMISSION = "dev.jaspreet.printserver.USB_PERMISSION"
         private const val SCAN_INTERFACE_SETTLE_MS = 150L
+        private const val SCAN_ZERO_READ_RETRIES = 4
+        private const val SCAN_ZERO_READ_DELAY_MS = 300L
     }
 }

@@ -1,8 +1,17 @@
 package dev.jaspreet.printserver.service
 
+import dev.jaspreet.printserver.scan.ScannerCapabilities
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+
+enum class ScanState {
+    UNAVAILABLE,
+    STARTING,
+    READY,
+    SCANNING,
+    FAILED,
+}
 
 data class ServerStatus(
     val running: Boolean = false,
@@ -18,6 +27,10 @@ data class ServerStatus(
     val pdls: List<String> = emptyList(),
     val tier: Int? = null,
     val connectedAt: Long? = null,
+    val scanState: ScanState = ScanState.UNAVAILABLE,
+    val scanPort: Int? = null,
+    val scanFailureReason: String? = null,
+    val scanCapabilities: ScannerCapabilities? = null,
 )
 
 object ServerState {

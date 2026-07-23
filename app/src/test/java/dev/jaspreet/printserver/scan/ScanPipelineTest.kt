@@ -38,6 +38,13 @@ class ScanPipelineTest {
         return head + chunkHeader + bytes + chunkFooter
     }
 
+    private fun createdJobResponse(location: String): ByteArray =
+        (
+            "HTTP/1.1 201 Created\r\n" +
+                "Location: $location\r\n" +
+                "Content-Length: 0\r\n\r\n"
+            ).toByteArray(Charsets.UTF_8)
+
     @Test
     fun `happy path scans a page and writes the JPEG bytes`() {
         val fakeJpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01, 0x02, 0xFF.toByte(), 0xD9.toByte())
@@ -48,7 +55,7 @@ class ScanPipelineTest {
                 req.startsWith("GET /Scan/Status") ->
                     chunkedResponse("200 OK", body = "<ScannerStatus><ScannerState>Idle</ScannerState></ScannerStatus>")
                 req.startsWith("POST /Scan/Jobs") ->
-                    chunkedResponse("201 Created", extraHeaders = "Location: /Scan/Jobs/JobList/1\r\n", body = "")
+                    createdJobResponse("/Scan/Jobs/JobList/1")
                 req.startsWith("GET /Scan/Jobs/JobList/1 ") -> {
                     pollCount++
                     chunkedResponse(
@@ -86,7 +93,7 @@ class ScanPipelineTest {
                 req.startsWith("GET /Scan/Status") ->
                     chunkedResponse("200 OK", body = "<ScannerStatus><ScannerState>Idle</ScannerState></ScannerStatus>")
                 req.startsWith("POST /Scan/Jobs") ->
-                    chunkedResponse("201 Created", extraHeaders = "Location: /Scan/Jobs/JobList/1\r\n", body = "")
+                    createdJobResponse("/Scan/Jobs/JobList/1")
                 req.startsWith("GET /Scan/Jobs/JobList/1 ") ->
                     chunkedResponse("200 OK", body = "<Jobs><Job><j:JobState>Processing</j:JobState></Job></Jobs>")
                 else -> throw IOException("unexpected request: $req")
@@ -104,7 +111,7 @@ class ScanPipelineTest {
                 req.startsWith("GET /Scan/Status") ->
                     chunkedResponse("200 OK", body = "<ScannerStatus><ScannerState>Idle</ScannerState></ScannerStatus>")
                 req.startsWith("POST /Scan/Jobs") ->
-                    chunkedResponse("201 Created", extraHeaders = "Location: /Scan/Jobs/JobList/1\r\n", body = "")
+                    createdJobResponse("/Scan/Jobs/JobList/1")
                 req.startsWith("GET /Scan/Jobs/JobList/1 ") ->
                     chunkedResponse("200 OK", body = "<PreScanPage><PageState>CanceledByDevice</PageState></PreScanPage>")
                 else -> throw IOException("unexpected request: $req")
@@ -122,7 +129,7 @@ class ScanPipelineTest {
                 req.startsWith("GET /Scan/Status") ->
                     chunkedResponse("200 OK", body = "<ScannerStatus><ScannerState>Idle</ScannerState></ScannerStatus>")
                 req.startsWith("POST /Scan/Jobs") ->
-                    chunkedResponse("201 Created", extraHeaders = "Location: /Scan/Jobs/JobList/1\r\n", body = "")
+                    createdJobResponse("/Scan/Jobs/JobList/1")
                 req.startsWith("GET /Scan/Jobs/JobList/1 ") ->
                     chunkedResponse("200 OK", body = "<PreScanPage><j:JobState>Processing</j:JobState></PreScanPage>")
                 else -> throw IOException("unexpected request: $req")
@@ -145,7 +152,7 @@ class ScanPipelineTest {
                     chunkedResponse("200 OK", body = "<ScannerStatus><ScannerState>Idle</ScannerState></ScannerStatus>")
                 req.startsWith("POST /Scan/Jobs") -> {
                     capturedJobBody = req.substringAfter("\r\n\r\n")
-                    chunkedResponse("201 Created", extraHeaders = "Location: /Scan/Jobs/JobList/1\r\n", body = "")
+                    createdJobResponse("/Scan/Jobs/JobList/1")
                 }
                 req.startsWith("GET /Scan/Jobs/JobList/1 ") ->
                     chunkedResponse(
@@ -165,10 +172,10 @@ class ScanPipelineTest {
         assertTrue(capturedJobBody.contains("<XResolution>600</XResolution>"))
         assertTrue(capturedJobBody.contains("<YResolution>600</YResolution>"))
         assertTrue(capturedJobBody.contains("<ColorSpace>Gray</ColorSpace>"))
-        // Width/Height are pixel counts at the requested resolution, not a fixed
-        // resolution-independent page size -- at 600dpi (2x the 300dpi baseline) the
-        // full US-Letter region must scale to 5100x6600, not stay at 2550x3300.
-        assertTrue(capturedJobBody.contains("<Width>5100</Width>"))
-        assertTrue(capturedJobBody.contains("<Height>6600</Height>"))
+        // Width/Height are in the scanner's fixed LEDM region coordinate space, not
+        // pixels at the selected output DPI. Scaling these by resolution makes the
+        // physical carriage scan only a small top-left strip at low DPI.
+        assertTrue(capturedJobBody.contains("<Width>2550</Width>"))
+        assertTrue(capturedJobBody.contains("<Height>3508</Height>"))
     }
 }

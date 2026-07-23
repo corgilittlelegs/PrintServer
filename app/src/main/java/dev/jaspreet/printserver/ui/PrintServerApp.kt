@@ -47,6 +47,7 @@ import dev.jaspreet.printserver.activity.ActivityStatus
 import dev.jaspreet.printserver.jobs.JobState
 import dev.jaspreet.printserver.jobs.QueueEntry
 import dev.jaspreet.printserver.jobs.QueueState
+import dev.jaspreet.printserver.service.ScanState
 import dev.jaspreet.printserver.service.ServerStatus
 import dev.jaspreet.printserver.ui.components.UsbConnectionIllustration
 import dev.jaspreet.printserver.ui.components.WirelessSharingIllustration
@@ -510,6 +511,8 @@ fun PrintServerApp(
                             }
                         }
 
+                        ScanStatusCard(status = status)
+
                         // Card 2: Discovery Information
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -584,6 +587,8 @@ fun PrintServerApp(
                                     "Serial" to (status.serialNumber ?: "N/A"),
                                     "VID:PID" to (status.vidPid ?: "N/A"),
                                     "PDLs" to if (status.pdls.isNotEmpty()) status.pdls.joinToString(", ") else "N/A",
+                                    "Scanner" to scanStatusLabel(status),
+                                    "Scan Capabilities" to scanCapabilitiesLabel(status),
                                     "Connected At" to (status.connectedAt?.let { DateFormat.getTimeInstance().format(Date(it)) } ?: "N/A")
                                 )
 
@@ -656,6 +661,88 @@ fun PrintServerApp(
             shape = RoundedCornerShape(16.dp),
             containerColor = MaterialTheme.colorScheme.surface
         )
+    }
+}
+
+@Composable
+private fun ScanStatusCard(status: ServerStatus) {
+    val (label, detail, color) = when (status.scanState) {
+        ScanState.READY -> Triple(
+            "Scanner Ready",
+            "eSCL available at http://${status.ip}:${status.scanPort}/eSCL",
+            Color(0xFF4CAF50),
+        )
+        ScanState.SCANNING -> Triple(
+            "Scanning",
+            "A scan job is currently running.",
+            MaterialTheme.colorScheme.primary,
+        )
+        ScanState.FAILED -> Triple(
+            "Scanner Failed",
+            status.scanFailureReason ?: "The scan server hit an unknown error.",
+            MaterialTheme.colorScheme.error,
+        )
+        ScanState.STARTING -> Triple(
+            "Scanner Starting",
+            "Checking scanner capabilities over USB.",
+            MaterialTheme.colorScheme.primary,
+        )
+        ScanState.UNAVAILABLE -> Triple(
+            "Scanner Unavailable",
+            status.scanFailureReason ?: "No compatible scan interface was detected.",
+            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+        )
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(color.copy(alpha = 0.12f), RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (status.scanState == ScanState.FAILED) Icons.Default.Warning else Icons.Default.Info,
+                        contentDescription = null,
+                        tint = color,
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = label,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = detail,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                    )
+                }
+            }
+            status.scanCapabilities?.let { caps ->
+                Text(
+                    text = "Resolutions: ${caps.supportedResolutions.joinToString(", ")} dpi · Modes: ${caps.supportedColorModes.joinToString(", ") { it.name.lowercase().replaceFirstChar(Char::uppercase) }}",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                )
+            }
+        }
     }
 }
 
@@ -895,4 +982,19 @@ private fun formatBytes(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
     else -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
+}
+
+private fun scanStatusLabel(status: ServerStatus): String = when (status.scanState) {
+    ScanState.READY -> "Ready on port ${status.scanPort ?: "N/A"}"
+    ScanState.SCANNING -> "Scanning"
+    ScanState.FAILED -> "Failed${status.scanFailureReason?.let { ": $it" } ?: ""}"
+    ScanState.STARTING -> "Starting"
+    ScanState.UNAVAILABLE -> "Unavailable${status.scanFailureReason?.let { ": $it" } ?: ""}"
+}
+
+private fun scanCapabilitiesLabel(status: ServerStatus): String {
+    val caps = status.scanCapabilities ?: return "N/A"
+    val resolutions = caps.supportedResolutions.joinToString(", ") { "${it} dpi" }
+    val modes = caps.supportedColorModes.joinToString(", ") { it.name.lowercase().replaceFirstChar(Char::uppercase) }
+    return "$resolutions; $modes"
 }

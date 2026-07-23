@@ -34,6 +34,22 @@ class ChunkedHttpTest {
     }
 
     @Test
+    fun `skips stale preamble until the HTTP status line`() {
+        val reader = readerOver(
+            "0\r\n\r\n<old>stale</old>\r\n".toByteArray(),
+            "HTTP/1.1 200 OK\r\nLocation: /Scan/Jobs/JobList/1\r\n\r\n".toByteArray(),
+        )
+        val header = ChunkedHttp.readHeader(reader)
+        assertEquals("HTTP/1.1 200 OK\r\nLocation: /Scan/Jobs/JobList/1\r\n", header)
+    }
+
+    @Test
+    fun `recognizes a created response from the status line`() {
+        val header = "HTTP/1.1 201 Created\r\nLocation: /Scan/Jobs/JobList/1\r\n"
+        assertEquals(true, ChunkedHttp.isCreated(header))
+    }
+
+    @Test
     fun `decodes a single-chunk body`() {
         val body = "<ScannerState>Idle</ScannerState>"
         val whole = ("${body.length.toString(16)}\r\n$body\r\n0\r\n\r\n").toByteArray()

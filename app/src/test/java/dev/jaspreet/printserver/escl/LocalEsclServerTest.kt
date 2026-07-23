@@ -118,6 +118,24 @@ class LocalEsclServerTest {
     }
 
     @Test
+    fun `NextDocument only serves a completed job once`() {
+        val port = start(onScan = { _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01)) })
+        val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+        var attempts = 20
+        while (attempts-- > 0) {
+            val (_, statusBody) = httpGet(port, "/eSCL/ScannerStatus")
+            if (!statusBody.contains("Processing")) break
+            Thread.sleep(50)
+        }
+
+        val (firstStatus, _) = httpGet(port, "$location/NextDocument")
+        val (secondStatus, _) = httpGet(port, "$location/NextDocument")
+
+        assertEquals(200, firstStatus)
+        assertTrue("second NextDocument must not re-serve the same JPEG", secondStatus != 200)
+    }
+
+    @Test
     fun `a second POST while a job is in flight is rejected`() {
         val holdLatch = CountDownLatch(1)
         val releaseLatch = CountDownLatch(1)

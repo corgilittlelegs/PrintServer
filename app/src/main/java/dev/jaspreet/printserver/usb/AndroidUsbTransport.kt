@@ -10,6 +10,8 @@ class AndroidUsbTransport(
     private val iface: UsbInterface,
     private val outEndpoint: UsbEndpoint,
     private val inEndpoint: UsbEndpoint,
+    private val zeroReadRetries: Int = 0,
+    private val zeroReadDelayMs: Long = 0,
 ) : UsbTransport {
 
     override fun write(data: ByteArray, offset: Int, length: Int) {
@@ -25,21 +27,21 @@ class AndroidUsbTransport(
     }
 
     /** NOTE: HPLIP's own USB layer (io/hpmud/musb.c's musb_read) treats a 0-byte
-     *  bulkTransfer result as "nothing yet, not an error" and loops retrying against a
-     *  shrinking timeout budget rather than failing immediately. That was tried here
-     *  too, but hardware testing against a real DeskJet 2300-series unit's LEDM scan
-     *  interface showed it made things measurably *worse* -- a tight retry loop with no
-     *  delay between iterations appears to further destabilize an already-flaky
-     *  interface rather than ride out a transient blip, turning intermittent failures
-     *  into consistent ones. Reverted to a single-shot read; a zero-length result is
-     *  surfaced immediately and handled by the caller's own retry logic
-     *  (`ServerService.scanWithRetry`), which spaces attempts seconds apart instead of
-     *  hammering the device. Revisit only with real USB traffic-capture evidence, not
-     *  further guessing. */
+     *  bulkTransfer result as "nothing yet, not an error". A prior tight retry loop with
+     *  no delay made the real DeskJet 2300-series scan interface less reliable, so the
+     *  default remains single-shot. The scan interface can opt into a small delayed
+     *  recovery budget, which gives the motor-start transient time to settle without
+     *  hammering the USB pipe. */
     override fun read(buffer: ByteArray): Int {
-        val n = connection.bulkTransfer(inEndpoint, buffer, buffer.size, READ_TIMEOUT_MS)
-        if (n < 0) throw IOException("USB bulk read failed or timed out")
-        return n
+        var zeroReads = 0
+        while (true) {
+            val n = connection.bulkTransfer(inEndpoint, buffer, buffer.size, READ_TIMEOUT_MS)
+            if (n < 0) throw IOException("USB bulk read failed or timed out")
+            if (n > 0) return n
+            if (zeroReads >= zeroReadRetries) return 0
+            zeroReads++
+            if (zeroReadDelayMs > 0) Thread.sleep(zeroReadDelayMs)
+        }
     }
 
     override fun close() {

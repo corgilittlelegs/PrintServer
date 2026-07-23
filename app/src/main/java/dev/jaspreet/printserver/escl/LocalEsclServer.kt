@@ -15,6 +15,7 @@ import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -35,6 +36,7 @@ private fun EsclJobState.toWireString(): String = when (this) {
 
 private class EsclJob(val id: String, val outputFile: File) {
     @Volatile var state: EsclJobState = EsclJobState.PROCESSING
+    val delivered = AtomicBoolean(false)
 }
 
 /**
@@ -204,11 +206,21 @@ class LocalEsclServer(
             respond(cout, status, "text/plain", "Not ready")
             return
         }
+        if (!job.delivered.compareAndSet(false, true)) {
+            respond(cout, 404, "text/plain", "No more documents")
+            return
+        }
         if (!job.outputFile.exists()) {
             respond(cout, 404, "text/plain", "Not ready")
             return
         }
-        respondWithHeaders(cout, 200, "image/jpeg", "", emptyMap(), bodyBytes = job.outputFile.readBytes())
+        val bodyBytes = job.outputFile.readBytes()
+        try {
+            respondWithHeaders(cout, 200, "image/jpeg", "", emptyMap(), bodyBytes = bodyBytes)
+        } finally {
+            jobs.remove(id, job)
+            job.outputFile.delete()
+        }
     }
 
     private fun handleDeleteJob(cout: BufferedOutputStream, path: String) {

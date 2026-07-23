@@ -66,6 +66,8 @@ class LedmRequestsTest {
         assertTrue(body.contains("<Height>3300</Height>"))
         assertTrue(body.contains("<Format>Jpeg</Format>"))
         assertTrue(body.contains("<ColorSpace>Color</ColorSpace>"))
+        assertTrue(body.contains("<Brightness>1000</Brightness>"))
+        assertTrue(body.contains("<Contrast>1000</Contrast>"))
         assertTrue(body.contains("<InputSource>Platen</InputSource>"))
         assertTrue(body.endsWith("</ScanSettings>"))
     }
