@@ -1,12 +1,56 @@
+# Build outputs & caches
 .gradle/
 build/
-local.properties
-.idea/
-*.iml
+**/build/
+app/.cxx/
+.cxx/
+.kotlin/
+*.apk
+*.aab
+*.aar
+
+# Native build workspaces
 native/downloads/
 native/build/
-app/.cxx/
-.superpowers/
 
-# Kotlin/Gradle incremental compilation cache
-.kotlin/
+# Secrets & local configuration
+local.properties
+secrets.properties
+.env
+.env.*
+*.env
+google-services.json
+GoogleService-Info.plist
+service-account*.json
+*-credentials.json
+
+# Keys & Certificates
+*.keystore
+*.jks
+*.p12
+*.pem
+*.key
+*.pk8
+*.crt
+
+# IDEs, Editors & Tooling
+.idea/
+*.iml
+.vscode/
+.claude/
+.superpowers/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+
+# Logs
+*.log
