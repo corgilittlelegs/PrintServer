@@ -47,12 +47,15 @@ import dev.jaspreet.printserver.activity.ActivityStatus
 import dev.jaspreet.printserver.jobs.JobState
 import dev.jaspreet.printserver.jobs.QueueEntry
 import dev.jaspreet.printserver.jobs.QueueState
+import dev.jaspreet.printserver.scan.ScanProgressPhase
 import dev.jaspreet.printserver.scan.ScanTone
 import dev.jaspreet.printserver.scan.ScanToneSettings
+import dev.jaspreet.printserver.scan.SupplyCartridge
 import dev.jaspreet.printserver.service.ScanState
 import dev.jaspreet.printserver.service.ServerStatus
 import dev.jaspreet.printserver.ui.components.UsbConnectionIllustration
 import dev.jaspreet.printserver.ui.components.WirelessSharingIllustration
+import kotlinx.coroutines.delay
 import java.text.DateFormat
 import java.util.Date
 
@@ -521,6 +524,8 @@ fun PrintServerApp(
                             onScanToneSettingsChange = onScanToneSettingsChange,
                         )
 
+                        SuppliesCard(status = status)
+
                         // Card 2: Discovery Information
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -595,6 +600,7 @@ fun PrintServerApp(
                                     "Serial" to (status.serialNumber ?: "N/A"),
                                     "VID:PID" to (status.vidPid ?: "N/A"),
                                     "PDLs" to if (status.pdls.isNotEmpty()) status.pdls.joinToString(", ") else "N/A",
+                                    "Supplies" to suppliesSummaryLabel(status),
                                     "Scanner" to scanStatusLabel(status),
                                     "Scan Capabilities" to scanCapabilitiesLabel(status),
                                     "Connected At" to (status.connectedAt?.let { DateFormat.getTimeInstance().format(Date(it)) } ?: "N/A")
@@ -678,15 +684,31 @@ private fun ScanStatusCard(
     scanToneSettings: ScanToneSettings,
     onScanToneSettingsChange: (brightness: Int, contrast: Int) -> Unit,
 ) {
+    val progress = status.scanProgress
+    var nowMs by remember(progress?.startedAtMs, progress?.phase) { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(progress?.startedAtMs, progress?.phase, status.scanState) {
+        while (progress != null && status.scanState == ScanState.SCANNING) {
+            nowMs = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
     val (label, detail, color) = when (status.scanState) {
         ScanState.READY -> Triple(
-            "Scanner Ready",
-            "eSCL available at http://${status.ip}:${status.scanPort}/eSCL",
+            if (progress?.phase == ScanProgressPhase.READY) "Scan Ready" else "Scanner Ready",
+            if (progress?.phase == ScanProgressPhase.READY) {
+                buildString {
+                    append("Result prepared")
+                    progress.outputBytes?.let { append(" · ${formatBytes(it)}") }
+                    append(" · eSCL ready for the client")
+                }
+            } else {
+                "eSCL available at http://${status.ip}:${status.scanPort}/eSCL"
+            },
             Color(0xFF4CAF50),
         )
         ScanState.SCANNING -> Triple(
-            "Scanning",
-            "A scan job is currently running.",
+            scanProgressTitle(progress?.phase),
+            scanProgressDetail(progress, nowMs),
             MaterialTheme.colorScheme.primary,
         )
         ScanState.FAILED -> Triple(
@@ -756,6 +778,19 @@ private fun ScanStatusCard(
             }
             if (status.scanCapabilities != null) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                if (status.scanState == ScanState.SCANNING && progress != null) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = color,
+                        trackColor = color.copy(alpha = 0.14f),
+                    )
+                    Text(
+                        text = "Phase-based progress from HP LEDM state; no fake percentage.",
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                        fontSize = 11.sp,
+                        lineHeight = 14.sp,
+                    )
+                }
                 ScanToneSlider(
                     label = "Brightness",
                     value = scanToneSettings.brightness,
@@ -802,6 +837,115 @@ private fun ScanToneSlider(label: String, value: Int, onValueChange: (Int) -> Un
             valueRange = ScanTone.MIN.toFloat()..ScanTone.MAX.toFloat(),
             steps = 39,
         )
+    }
+}
+
+@Composable
+private fun SuppliesCard(status: ServerStatus) {
+    val supplyStatus = status.supplyStatus
+    val hasSupplySignal = supplyStatus != null || status.supplyFailureReason != null
+    if (!status.running || !hasSupplySignal) return
+
+    val color = when {
+        supplyStatus == null -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+        supplyStatus.cartridges.any { (it.levelPercent ?: 100) <= 15 } -> MaterialTheme.colorScheme.error
+        else -> Color(0xFF4CAF50)
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(color.copy(alpha = 0.12f), RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = if (supplyStatus == null) Icons.Default.Warning else Icons.Default.Info,
+                        contentDescription = null,
+                        tint = color,
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (supplyStatus == null) "Ink Status Unavailable" else "Ink / Supplies",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = supplyStatus?.let { "Read from HP LEDM ${it.sourcePath}" }
+                            ?: (status.supplyFailureReason ?: "The printer did not expose supply details."),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                    )
+                }
+            }
+
+            supplyStatus?.cartridges?.forEachIndexed { index, cartridge ->
+                SupplyRow(cartridge = cartridge, color = colorForSupply(cartridge, color))
+                if (index != supplyStatus.cartridges.lastIndex) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SupplyRow(cartridge: SupplyCartridge, color: Color) {
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = cartridge.name,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                val detail = listOfNotNull(cartridge.color, cartridge.type, cartridge.state, cartridge.message)
+                    .distinct()
+                    .joinToString(" · ")
+                if (detail.isNotBlank()) {
+                    Text(
+                        text = detail,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                        lineHeight = 14.sp,
+                    )
+                }
+            }
+            Text(
+                text = cartridge.levelPercent?.let { "$it%" } ?: "Level unknown",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        cartridge.levelPercent?.let { percent ->
+            LinearProgressIndicator(
+                progress = { percent / 100f },
+                modifier = Modifier.fillMaxWidth(),
+                color = color,
+                trackColor = color.copy(alpha = 0.14f),
+            )
+        }
     }
 }
 
@@ -1043,9 +1187,42 @@ private fun formatBytes(bytes: Long): String = when {
     else -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
 }
 
+private fun formatElapsed(elapsedMs: Long): String {
+    val totalSeconds = (elapsedMs.coerceAtLeast(0)) / 1000
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return "%d:%02d".format(minutes, seconds)
+}
+
+private fun scanProgressTitle(phase: ScanProgressPhase?): String = when (phase) {
+    ScanProgressPhase.STARTING -> "Starting scan"
+    ScanProgressPhase.SCANNER_WORKING -> "Scanner is working"
+    ScanProgressPhase.RECEIVING_IMAGE -> "Receiving image"
+    ScanProgressPhase.READY -> "Scan ready"
+    ScanProgressPhase.FAILED -> "Scan failed"
+    null -> "Scanner is working"
+}
+
+private fun scanProgressDetail(
+    progress: dev.jaspreet.printserver.service.ScanProgress?,
+    nowMs: Long,
+): String {
+    if (progress == null) return "A scan job is currently running."
+    val elapsed = formatElapsed(nowMs - progress.startedAtMs)
+    val mode = progress.colorMode.name.lowercase().replaceFirstChar(Char::uppercase)
+    val base = "${progress.resolution} dpi · $mode · elapsed $elapsed"
+    return when (progress.phase) {
+        ScanProgressPhase.STARTING -> "Checking scanner and creating job · $base"
+        ScanProgressPhase.SCANNER_WORKING -> "HP reports the job is processing; image is not ready yet · $base"
+        ScanProgressPhase.RECEIVING_IMAGE -> "HP returned the image URL; receiving JPEG bytes · $base"
+        ScanProgressPhase.READY -> "JPEG is ready${progress.outputBytes?.let { " · ${formatBytes(it)}" } ?: ""} · $base"
+        ScanProgressPhase.FAILED -> "Scan failed · $base"
+    }
+}
+
 private fun scanStatusLabel(status: ServerStatus): String = when (status.scanState) {
     ScanState.READY -> "Ready on port ${status.scanPort ?: "N/A"}"
-    ScanState.SCANNING -> "Scanning"
+    ScanState.SCANNING -> scanProgressTitle(status.scanProgress?.phase)
     ScanState.FAILED -> "Failed${status.scanFailureReason?.let { ": $it" } ?: ""}"
     ScanState.STARTING -> "Starting"
     ScanState.UNAVAILABLE -> "Unavailable${status.scanFailureReason?.let { ": $it" } ?: ""}"
@@ -1056,4 +1233,24 @@ private fun scanCapabilitiesLabel(status: ServerStatus): String {
     val resolutions = caps.supportedResolutions.joinToString(", ") { "${it} dpi" }
     val modes = caps.supportedColorModes.joinToString(", ") { it.name.lowercase().replaceFirstChar(Char::uppercase) }
     return "$resolutions; $modes"
+}
+
+private fun suppliesSummaryLabel(status: ServerStatus): String {
+    val supplyStatus = status.supplyStatus
+        ?: return status.supplyFailureReason?.let { "Unavailable: $it" } ?: "N/A"
+    return supplyStatus.cartridges.joinToString(", ") { cartridge ->
+        cartridge.levelPercent?.let { "${cartridge.name} $it%" } ?: cartridge.name
+    }
+}
+
+private fun colorForSupply(cartridge: SupplyCartridge, fallback: Color): Color = when {
+    cartridge.levelPercent != null && cartridge.levelPercent <= 15 -> Color(0xFFE53935)
+    cartridge.levelPercent != null && cartridge.levelPercent <= 30 -> Color(0xFFFF9800)
+    cartridge.color?.contains("black", ignoreCase = true) == true -> Color(0xFF424242)
+    cartridge.color?.contains("cyan", ignoreCase = true) == true -> Color(0xFF00ACC1)
+    cartridge.color?.contains("magenta", ignoreCase = true) == true -> Color(0xFFD81B60)
+    cartridge.color?.contains("yellow", ignoreCase = true) == true -> Color(0xFFFDD835)
+    cartridge.name.contains("black", ignoreCase = true) -> Color(0xFF424242)
+    cartridge.name.contains("color", ignoreCase = true) -> Color(0xFF7E57C2)
+    else -> fallback
 }

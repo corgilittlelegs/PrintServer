@@ -42,8 +42,11 @@ import dev.jaspreet.printserver.render.PpdAsset
 import dev.jaspreet.printserver.scan.LedmCapabilities
 import dev.jaspreet.printserver.scan.ScanColorMode
 import dev.jaspreet.printserver.scan.ScanPipeline
+import dev.jaspreet.printserver.scan.ScanProgressPhase
 import dev.jaspreet.printserver.scan.ScanToneSettingsState
 import dev.jaspreet.printserver.scan.ScannerCapabilities
+import dev.jaspreet.printserver.scan.LedmSupplyStatus
+import dev.jaspreet.printserver.scan.SupplyStatus
 import dev.jaspreet.printserver.usb.DeviceId
 import dev.jaspreet.printserver.usb.DeviceIdInfo
 import dev.jaspreet.printserver.usb.UsbPrinterManager
@@ -229,7 +232,14 @@ class ServerService : Service() {
         val caps = PrinterCapabilities.deskJet2300(
             java.net.URI.create("ipp://${bindAddr.hostAddress}:$IPP_PORT/ipp/print")
         )
-        val ipp = LocalIppServer(IPP_PORT, caps, queue, spoolDir)
+        val supplyResult = querySupplyStatusWithRetry(usb, device)
+        val ipp = LocalIppServer(
+            IPP_PORT,
+            caps,
+            queue,
+            spoolDir,
+            supplyStatusProvider = { ServerState.status.value.supplyStatus ?: supplyResult.status },
+        )
             .also { localIppServer = it }
         ipp.start(bindAddr)
 
@@ -260,6 +270,11 @@ class ServerService : Service() {
                             it.copy(
                                 scanState = ScanState.SCANNING,
                                 scanFailureReason = null,
+                                scanProgress = ScanProgress(
+                                    phase = ScanProgressPhase.STARTING,
+                                    resolution = resolution,
+                                    colorMode = colorMode,
+                                ),
                             )
                         }
                         try {
@@ -267,10 +282,18 @@ class ServerService : Service() {
                                 closeLegacyTransportForScan()
                                 scanWithCandidateFallback(usb, device, output, resolution, colorMode, brightness, contrast)
                             }
+                            val outputBytes = output.length()
                             update {
                                 it.copy(
                                     scanState = ScanState.READY,
                                     scanFailureReason = null,
+                                    scanProgress = ScanProgress(
+                                        phase = ScanProgressPhase.READY,
+                                        resolution = resolution,
+                                        colorMode = colorMode,
+                                        startedAtMs = it.scanProgress?.startedAtMs ?: System.currentTimeMillis(),
+                                        outputBytes = outputBytes,
+                                    ),
                                 )
                             }
                         } catch (e: Exception) {
@@ -279,6 +302,9 @@ class ServerService : Service() {
                                 it.copy(
                                     scanState = ScanState.FAILED,
                                     scanFailureReason = reason,
+                                    scanProgress = it.scanProgress?.copy(
+                                        phase = ScanProgressPhase.FAILED,
+                                    ),
                                 )
                             }
                             throw e
@@ -322,9 +348,32 @@ class ServerService : Service() {
                 scanPort = if (scanState == ScanState.READY) ESCL_PORT else null,
                 scanFailureReason = scanFailureReason,
                 scanCapabilities = liveScanCapabilities,
+                supplyStatus = supplyResult.status,
+                supplyFailureReason = supplyResult.failureReason,
             )
         }
         notify(legacyNotificationMessage(caps.makeAndModel, hostAddress, scanState, scanFailureReason))
+    }
+
+    private fun updateScanProgressPhase(
+        phase: ScanProgressPhase,
+        resolution: Int,
+        colorMode: ScanColorMode,
+    ) {
+        update {
+            val current = it.scanProgress
+            it.copy(
+                scanState = ScanState.SCANNING,
+                scanFailureReason = null,
+                scanProgress = ScanProgress(
+                    phase = phase,
+                    resolution = resolution,
+                    colorMode = colorMode,
+                    startedAtMs = current?.startedAtMs ?: System.currentTimeMillis(),
+                    outputBytes = current?.outputBytes,
+                ),
+            )
+        }
     }
 
     private fun legacyTransportFor(
@@ -369,6 +418,7 @@ class ServerService : Service() {
                     contrast = contrast,
                     candidateLabel = candidate.label,
                     attempts = 1,
+                    onProgress = { phase -> updateScanProgressPhase(phase, resolution, colorMode) },
                 )
                 Log.i(TAG, "scan_diag candidate=${candidate.label} result=success")
                 return
@@ -422,6 +472,38 @@ class ServerService : Service() {
         return ScanCapsProbeResult(capabilities = null, failureReason = failure)
     }
 
+    private fun querySupplyStatusWithRetry(
+        usb: UsbPrinterManager,
+        device: android.hardware.usb.UsbDevice,
+    ): SupplyProbeResult {
+        var lastFailure: String? = null
+        repeat(SUPPLY_RETRY_ATTEMPTS) { attempt ->
+            val startedAt = System.currentTimeMillis()
+            try {
+                val status = LedmSupplyStatus.query(
+                    openTransport = {
+                        usb.openScanTransport(device)
+                            ?: throw java.io.IOException("LEDM device-management interface unavailable")
+                    },
+                )
+                Log.i(
+                    TAG,
+                    "supply_diag attempt=${attempt + 1}/$SUPPLY_RETRY_ATTEMPTS result=success durationMs=${System.currentTimeMillis() - startedAt} source=${status.sourcePath} cartridges=${status.cartridges.size}",
+                )
+                return SupplyProbeResult(status = status, failureReason = null)
+            } catch (e: Exception) {
+                lastFailure = e.message ?: e.javaClass.simpleName
+                Log.w(
+                    TAG,
+                    "supply_diag attempt=${attempt + 1}/$SUPPLY_RETRY_ATTEMPTS result=failure durationMs=${System.currentTimeMillis() - startedAt} reason=$lastFailure",
+                    e,
+                )
+                if (attempt < SUPPLY_RETRY_ATTEMPTS - 1) Thread.sleep(RETRY_DELAY_MS)
+            }
+        }
+        return SupplyProbeResult(status = null, failureReason = lastFailure ?: "Supply status query failed")
+    }
+
     /** Runs one scan attempt and records structured diagnostics. The caller controls
      *  [attempts]; production uses one attempt per selected scan interface so a physical
      *  scan is never duplicated after the carriage has started moving, while tests can
@@ -435,11 +517,12 @@ class ServerService : Service() {
         contrast: Int,
         candidateLabel: String = "default",
         attempts: Int = SCAN_RETRY_ATTEMPTS,
+        onProgress: (ScanProgressPhase) -> Unit = {},
     ) {
         repeat(attempts) { attempt ->
             val startedAt = System.currentTimeMillis()
             try {
-                ScanPipeline(openScanTransport).scan(output, resolution, colorMode, brightness, contrast)
+                ScanPipeline(openScanTransport, onProgress = onProgress).scan(output, resolution, colorMode, brightness, contrast)
                 val outputBytes = validateScanOutput(output)
                 Log.i(
                     TAG,
@@ -484,6 +567,11 @@ class ServerService : Service() {
 
     private data class ScanCapsProbeResult(
         val capabilities: ScannerCapabilities?,
+        val failureReason: String?,
+    )
+
+    private data class SupplyProbeResult(
+        val status: SupplyStatus?,
         val failureReason: String?,
     )
 
@@ -573,6 +661,7 @@ class ServerService : Service() {
         const val RAW_PORT = 9100
         const val ESCL_PORT = 8632
         private const val RETRY_ATTEMPTS = 4
+        private const val SUPPLY_RETRY_ATTEMPTS = 2
         private const val RETRY_DELAY_MS = 400L
         private const val SCAN_RETRY_ATTEMPTS = 3
         private const val SCAN_RETRY_DELAY_MS = 5000L // HPLIP's own guidance: "retry after a few seconds"

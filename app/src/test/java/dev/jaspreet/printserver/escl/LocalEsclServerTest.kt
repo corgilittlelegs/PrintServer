@@ -29,14 +29,12 @@ class LocalEsclServerTest {
             output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x00, 0xFF.toByte(), 0xD9.toByte()))
         },
         defaultToneSettings: () -> ScanToneSettings = { ScanToneSettings() },
-        nextDocumentWaitTimeoutMs: Long = 120_000,
         nextDocumentPollDelayMs: Long = 250,
     ): Int {
         spoolDir = createTempDir()
         val s = LocalEsclServer(
             port = 0, makeAndModel = "PrintServer Scanner", capabilities = capabilities,
             spoolDir = spoolDir, performScan = onScan, defaultToneSettings = defaultToneSettings,
-            nextDocumentWaitTimeoutMs = nextDocumentWaitTimeoutMs,
             nextDocumentPollDelayMs = nextDocumentPollDelayMs,
         )
         s.start(bindAddress = null)
@@ -157,6 +155,37 @@ class LocalEsclServerTest {
     }
 
     @Test
+    fun `POST ScanJobs clamps above-maximum requested resolution to maximum supported dpi`() {
+        val done = CountDownLatch(1)
+        var capturedResolution = -1
+        val port = start(
+            capabilities = ScannerCapabilities(
+                maxWidth = 2550,
+                maxHeight = 3300,
+                supportedResolutions = listOf(75, 300, 600, 1200),
+                supportedColorModes = setOf(ScanColorMode.GRAYSCALE),
+            ),
+            onScan = { resolution, _, _, _, output ->
+                capturedResolution = resolution
+                output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte()))
+                done.countDown()
+            },
+        )
+        val body = """
+            <scan:ScanSettings xmlns:scan="http://schemas.hp.com/imaging/escl/2011/05/03">
+              <scan:XResolution>2400</scan:XResolution>
+              <scan:ColorMode>Grayscale8</scan:ColorMode>
+            </scan:ScanSettings>
+        """.trimIndent()
+
+        val (status, _) = httpPost(port, "/eSCL/ScanJobs", body)
+
+        assertEquals(201, status)
+        assertTrue("scan should complete", done.await(5, TimeUnit.SECONDS))
+        assertEquals(1200, capturedResolution)
+    }
+
+    @Test
     fun `NextDocument serves the scanned bytes once the job completes`() {
         val port = start(onScan = { _, _, _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01)) })
         val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
@@ -178,7 +207,6 @@ class LocalEsclServerTest {
         val releaseScan = CountDownLatch(1)
         val nextDocumentResult = java.util.concurrent.atomic.AtomicReference<Pair<Int, String>>()
         val port = start(
-            nextDocumentWaitTimeoutMs = 5_000,
             nextDocumentPollDelayMs = 20,
             onScan = { _, _, _, _, output ->
                 scanStarted.countDown()
@@ -203,7 +231,7 @@ class LocalEsclServerTest {
     }
 
     @Test
-    fun `ScannerStatus retains a completed job until its document is fetched`() {
+    fun `ScannerStatus retains a completed job until the client deletes it`() {
         val port = start(onScan = { _, _, _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01)) })
         val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
         val jobId = location.substringAfterLast("/")
@@ -226,11 +254,17 @@ class LocalEsclServerTest {
         val (docStatus, _) = httpGet(port, "$location/NextDocument")
         assertEquals(200, docStatus)
         val (_, afterFetchStatus) = httpGet(port, "/eSCL/ScannerStatus")
-        assertTrue(!afterFetchStatus.contains("<pwg:JobUri>/eSCL/ScanJobs/$jobId</pwg:JobUri>"))
+        assertTrue(afterFetchStatus.contains("<pwg:JobUri>/eSCL/ScanJobs/$jobId</pwg:JobUri>"))
+        assertTrue(afterFetchStatus.contains("<pwg:ImagesToTransfer>0</pwg:ImagesToTransfer>"))
+
+        val deleteStatus = httpDelete(port, location)
+        assertEquals(200, deleteStatus)
+        val (_, afterDeleteStatus) = httpGet(port, "/eSCL/ScannerStatus")
+        assertTrue(!afterDeleteStatus.contains("<pwg:JobUri>/eSCL/ScanJobs/$jobId</pwg:JobUri>"))
     }
 
     @Test
-    fun `NextDocument only serves a completed job once`() {
+    fun `NextDocument rejects repeat fetches that start after first delivery`() {
         val port = start(onScan = { _, _, _, _, output -> output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01)) })
         val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
         var attempts = 20
@@ -244,7 +278,48 @@ class LocalEsclServerTest {
         val (secondStatus, _) = httpGet(port, "$location/NextDocument")
 
         assertEquals(200, firstStatus)
-        assertTrue("second NextDocument must not re-serve the same JPEG", secondStatus != 200)
+        assertTrue("a new request after successful delivery should not replay forever", secondStatus != 200)
+
+        val deleteStatus = httpDelete(port, location)
+        assertEquals(200, deleteStatus)
+        val (afterDeleteStatus, _) = httpGet(port, "$location/NextDocument")
+        assertTrue("DELETE ends the job's document lifetime", afterDeleteStatus != 200)
+    }
+
+    @Test
+    fun `NextDocument serves overlapping requests that were waiting before first delivery`() {
+        val scanStarted = CountDownLatch(1)
+        val releaseScan = CountDownLatch(1)
+        val firstResult = java.util.concurrent.atomic.AtomicReference<Pair<Int, String>>()
+        val secondResult = java.util.concurrent.atomic.AtomicReference<Pair<Int, String>>()
+        val port = start(
+            nextDocumentPollDelayMs = 20,
+            onScan = { _, _, _, _, output ->
+                scanStarted.countDown()
+                releaseScan.await(5, TimeUnit.SECONDS)
+                output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01))
+            },
+        )
+        val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+        assertTrue("scan should have started", scanStarted.await(5, TimeUnit.SECONDS))
+
+        val firstFetch = Thread { firstResult.set(httpGet(port, "$location/NextDocument")) }
+        val secondFetch = Thread { secondResult.set(httpGet(port, "$location/NextDocument")) }
+        firstFetch.start()
+        secondFetch.start()
+        Thread.sleep(100)
+        assertTrue("first NextDocument should still be waiting while scan is processing", firstFetch.isAlive)
+        assertTrue("second NextDocument should still be waiting while scan is processing", secondFetch.isAlive)
+
+        releaseScan.countDown()
+        firstFetch.join(5_000)
+        secondFetch.join(5_000)
+
+        assertEquals(200, firstResult.get().first)
+        assertEquals(200, secondResult.get().first)
+
+        val (lateStatus, _) = httpGet(port, "$location/NextDocument")
+        assertTrue("late fetches after delivery must not loop forever", lateStatus != 200)
     }
 
     @Test

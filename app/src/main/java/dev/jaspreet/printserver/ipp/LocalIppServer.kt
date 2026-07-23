@@ -17,6 +17,7 @@ import dev.jaspreet.printserver.jobs.ColorMode
 import dev.jaspreet.printserver.jobs.JobQueue
 import dev.jaspreet.printserver.jobs.JobState
 import dev.jaspreet.printserver.jobs.PrintQuality
+import dev.jaspreet.printserver.scan.SupplyStatus
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayInputStream
@@ -40,6 +41,7 @@ class LocalIppServer(
     private val spoolDir: File,
     private val maxDocumentBytes: Long = BodyReader.DEFAULT_MAX_BYTES,
     private val maxConcurrentClients: Int = 64,
+    private val supplyStatusProvider: () -> SupplyStatus? = { null },
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
     private val executor = Executors.newCachedThreadPool()
@@ -127,6 +129,7 @@ class LocalIppServer(
     private fun getPrinterAttributes(request: IppPacket): IppPacket {
         val full = capabilities.asPrinterAttributes()
             .plus(listOf(Types.queuedJobCount.of(jobQueue.listActive().size)))
+            .plus(IppMarkerAttributes.from(supplyStatusProvider()))
         val requested = request[Tag.operationAttributes]?.getValues(Types.requestedAttributes)
         val filtered = if (requested.isNullOrEmpty() || requested.contains("all")) {
             full

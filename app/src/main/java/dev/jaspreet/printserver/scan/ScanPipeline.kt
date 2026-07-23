@@ -26,7 +26,8 @@ class ScanPipeline(
     private val openTransport: () -> UsbTransport,
     private val host: String = "localhost",
     private val pollDelayMs: Long = 500,
-    private val maxPolls: Int = 60, // ~30s of polling at the default delay
+    private val maxPolls: Int? = null,
+    private val onProgress: (ScanProgressPhase) -> Unit = {},
 ) {
     companion object {
         private const val DEFAULT_RESOLUTION = 300
@@ -44,6 +45,7 @@ class ScanPipeline(
         brightness: Int = ScanTone.DEFAULT,
         contrast: Int = ScanTone.DEFAULT,
     ) {
+        onProgress(ScanProgressPhase.STARTING)
         waitUntilIdle()
 
         val colorSpace = when (colorMode) {
@@ -73,6 +75,7 @@ class ScanPipeline(
             LedmResponses.parseLocationHeader(header)
                 ?: throw IOException("No Location header in create-job response")
         }
+        onProgress(ScanProgressPhase.SCANNER_WORKING)
 
         // The create-job response confirms the job was accepted, but the flatbed
         // carriage/lamp physically starts moving right around here -- hardware testing
@@ -83,11 +86,13 @@ class ScanPipeline(
         Thread.sleep(JOB_START_SETTLE_MS)
         val binaryUrl = withTransport { transport -> pollUntilPageReady(transport, jobUrl) }
 
+        onProgress(ScanProgressPhase.RECEIVING_IMAGE)
         withTransport { transport ->
             val reader = send(transport, LedmRequests.getResourceRequest(binaryUrl, host))
             ChunkedHttp.readHeader(reader)
             output.writeBytes(ChunkedHttp.readChunkedBody(reader))
         }
+        onProgress(ScanProgressPhase.READY)
     }
 
     /** Polls the create-job's Location URL, one open connection for the whole loop,
@@ -107,7 +112,11 @@ class ScanPipeline(
                 PollResult.Canceled -> throw IOException("Scan job was canceled")
                 PollResult.NoDocument -> throw IOException("No document detected on the flatbed")
                 PollResult.StillWaiting -> {
-                    if (--pollsLeft <= 0) throw IOException("Timed out waiting for scan to become ready")
+                    pollsLeft?.let { remaining ->
+                        val nextRemaining = remaining - 1
+                        pollsLeft = nextRemaining
+                        if (nextRemaining <= 0) throw IOException("Timed out waiting for scan to become ready")
+                    }
                     Thread.sleep(pollDelayMs)
                 }
             }

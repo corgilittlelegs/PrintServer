@@ -1,6 +1,9 @@
 package dev.jaspreet.printserver.service
 
 import dev.jaspreet.printserver.scan.ScannerCapabilities
+import dev.jaspreet.printserver.scan.ScanColorMode
+import dev.jaspreet.printserver.scan.ScanProgressPhase
+import dev.jaspreet.printserver.scan.SupplyStatus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -12,6 +15,14 @@ enum class ScanState {
     SCANNING,
     FAILED,
 }
+
+data class ScanProgress(
+    val phase: ScanProgressPhase,
+    val resolution: Int,
+    val colorMode: ScanColorMode,
+    val startedAtMs: Long = System.currentTimeMillis(),
+    val outputBytes: Long? = null,
+)
 
 data class ServerStatus(
     val running: Boolean = false,
@@ -31,6 +42,9 @@ data class ServerStatus(
     val scanPort: Int? = null,
     val scanFailureReason: String? = null,
     val scanCapabilities: ScannerCapabilities? = null,
+    val scanProgress: ScanProgress? = null,
+    val supplyStatus: SupplyStatus? = null,
+    val supplyFailureReason: String? = null,
 )
 
 object ServerState {

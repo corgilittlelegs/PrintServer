@@ -19,6 +19,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /** Internal job lifecycle state -- kept as a real enum (unlike the wire-facing
@@ -39,6 +40,7 @@ private fun EsclJobState.toWireString(): String = when (this) {
 private class EsclJob(val id: String, val outputFile: File) {
     @Volatile var state: EsclJobState = EsclJobState.PROCESSING
     val delivered = AtomicBoolean(false)
+    val deliveredAtMs = AtomicLong(0)
     val createdAtMs: Long = System.currentTimeMillis()
 }
 
@@ -66,7 +68,6 @@ class LocalEsclServer(
     ) -> Unit,
     private val defaultToneSettings: () -> ScanToneSettings = { ScanToneSettings() },
     private val maxConcurrentClients: Int = 64,
-    private val nextDocumentWaitTimeoutMs: Long = 120_000,
     private val nextDocumentPollDelayMs: Long = 250,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
@@ -102,7 +103,15 @@ class LocalEsclServer(
                     continue
                 }
                 executor.execute {
-                    try { handleClient(client) } finally { clientSlots.release() }
+                    try {
+                        handleClient(client)
+                    } catch (e: IOException) {
+                        Log.i("LocalEsclServer", "eSCL client disconnected: ${e.message}")
+                    } catch (e: Exception) {
+                        Log.w("LocalEsclServer", "eSCL client handler failed: ${e.message}", e)
+                    } finally {
+                        clientSlots.release()
+                    }
                 }
             }
         }
@@ -143,8 +152,7 @@ class LocalEsclServer(
 
     private fun handleCreateJob(cout: BufferedOutputStream, body: ByteArray) {
         val settings = EsclXml.parseScanSettings(String(body, Charsets.UTF_8))
-        val resolution = settings.resolution?.takeIf { it in capabilities.supportedResolutions }
-            ?: capabilities.supportedResolutions.firstOrNull() ?: 300
+        val resolution = resolveResolution(settings.resolution)
         val colorMode = settings.colorMode?.takeIf { it in capabilities.supportedColorModes }
             ?: capabilities.supportedColorModes.firstOrNull() ?: ScanColorMode.COLOR
         val defaults = defaultToneSettings()
@@ -218,6 +226,7 @@ class LocalEsclServer(
     }
 
     private fun handleNextDocument(cout: BufferedOutputStream, path: String) {
+        val requestStartedAtMs = System.currentTimeMillis()
         val id = path.removePrefix("/eSCL/ScanJobs/").removeSuffix("/NextDocument")
         val job = waitForNextDocumentJob(id)
         // A known job that isn't COMPLETED must never be served -- Processing means no
@@ -236,24 +245,22 @@ class LocalEsclServer(
             respond(cout, status, "text/plain", "Not ready")
             return
         }
-        if (!job.delivered.compareAndSet(false, true)) {
-            logRequest("GET", path, 404, "job=$id already delivered")
-            respond(cout, 404, "text/plain", "No more documents")
-            return
-        }
         if (!job.outputFile.exists()) {
             logRequest("GET", path, 404, "job=$id output missing")
             respond(cout, 404, "text/plain", "Not ready")
             return
         }
-        val bodyBytes = job.outputFile.readBytes()
-        try {
-            logRequest("GET", path, 200, "job=$id bytes=${bodyBytes.size}")
-            respondWithHeaders(cout, 200, "image/jpeg", "", emptyMap(), bodyBytes = bodyBytes)
-        } finally {
-            jobs.remove(id, job)
-            job.outputFile.delete()
+        val deliveredAtMs = job.deliveredAtMs.get()
+        if (deliveredAtMs > 0 && requestStartedAtMs >= deliveredAtMs) {
+            logRequest("GET", path, 404, "job=$id already delivered")
+            respond(cout, 404, "text/plain", "No more documents")
+            return
         }
+        val bodyLength = job.outputFile.length()
+        respondFile(cout, 200, "image/jpeg", job.outputFile)
+        job.delivered.set(true)
+        job.deliveredAtMs.compareAndSet(0, System.currentTimeMillis())
+        logRequest("GET", path, 200, "job=$id bytes=$bodyLength")
     }
 
     /**
@@ -263,16 +270,15 @@ class LocalEsclServer(
      * there is no image to display; it may DELETE the job as soon as status flips to
      * Completed without ever issuing a successful image fetch.
      *
-     * Treat NextDocument as a bounded long-poll instead: if the job is still Processing,
-     * hold this request until it becomes terminal (or until the wait budget expires). That
-     * lets the same client request receive the JPEG as soon as the scanner finishes.
+     * Treat NextDocument as a state-driven long-poll instead: if the job is still
+     * Processing, hold this request until it becomes terminal. A 1200-dpi flatbed scan on
+     * the DeskJet takes around 4.5 minutes, and future/custom modes may take longer, so a
+     * fixed time budget here is the wrong abstraction -- the job state is the clock.
      */
     private fun waitForNextDocumentJob(id: String): EsclJob? {
-        val deadline = System.currentTimeMillis() + nextDocumentWaitTimeoutMs.coerceAtLeast(0)
         while (true) {
             val job = jobs[id] ?: return null
             if (job.state != EsclJobState.PROCESSING) return job
-            if (System.currentTimeMillis() >= deadline) return job
             try {
                 Thread.sleep(nextDocumentPollDelayMs.coerceAtLeast(1))
             } catch (_: InterruptedException) {
@@ -280,6 +286,15 @@ class LocalEsclServer(
                 return job
             }
         }
+    }
+
+    private fun resolveResolution(requested: Int?): Int {
+        val supported = capabilities.supportedResolutions.sorted()
+        if (supported.isEmpty()) return requested ?: 300
+        val dpi = requested ?: return supported.first()
+        if (dpi <= supported.first()) return supported.first()
+        if (dpi >= supported.last()) return supported.last()
+        return supported.minBy { kotlin.math.abs(it - dpi) }
     }
 
     private fun handleDeleteJob(cout: BufferedOutputStream, path: String) {
@@ -364,6 +379,24 @@ class LocalEsclServer(
         }
         cout.write(headers.toByteArray(Charsets.ISO_8859_1))
         cout.write(bodyBytes)
+        cout.flush()
+    }
+
+    private fun respondFile(cout: BufferedOutputStream, status: Int, contentType: String, file: File) {
+        val statusText = when (status) {
+            200 -> "OK"; else -> "Error"
+        }
+        val headers = buildString {
+            append("HTTP/1.1 $status $statusText\r\n")
+            append("Content-Type: $contentType\r\n")
+            append("Content-Length: ${file.length()}\r\n")
+            append("Connection: close\r\n")
+            append("\r\n")
+        }
+        cout.write(headers.toByteArray(Charsets.ISO_8859_1))
+        file.inputStream().use { input ->
+            input.copyTo(cout, bufferSize = 64 * 1024)
+        }
         cout.flush()
     }
 

@@ -77,6 +77,54 @@ class ScanPipelineTest {
     }
 
     @Test
+    fun `happy path reports real scan progress phases in order`() {
+        val fakeJpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01, 0x02, 0xFF.toByte(), 0xD9.toByte())
+        val phases = mutableListOf<ScanProgressPhase>()
+        var jobPolls = 0
+        val transport = FakePrinterTransport { reqBytes ->
+            val req = String(reqBytes, Charsets.US_ASCII)
+            when {
+                req.startsWith("GET /Scan/Status") ->
+                    chunkedResponse("200 OK", body = "<ScannerStatus><ScannerState>Idle</ScannerState></ScannerStatus>")
+                req.startsWith("POST /Scan/Jobs") ->
+                    createdJobResponse("/Scan/Jobs/JobList/1")
+                req.startsWith("GET /Scan/Jobs/JobList/1 ") -> {
+                    jobPolls++
+                    if (jobPolls == 1) {
+                        chunkedResponse("200 OK", body = "<PreScanPage><j:JobState>Processing</j:JobState></PreScanPage>")
+                    } else {
+                        chunkedResponse(
+                            "200 OK",
+                            body = "<PreScanPage><PageState>ReadyToUpload</PageState>" +
+                                "<BinaryURL>/Scan/Jobs/JobList/1/Pages/1/Image</BinaryURL></PreScanPage>",
+                        )
+                    }
+                }
+                req.startsWith("GET /Scan/Jobs/JobList/1/Pages/1/Image") ->
+                    binaryChunkedResponse("200 OK", fakeJpeg)
+                else -> throw IOException("unexpected request: $req")
+            }
+        }
+
+        val output = createTempFile().toFile()
+        ScanPipeline(
+            { NonClosingTransport(transport) },
+            pollDelayMs = 0,
+            onProgress = { phases += it },
+        ).scan(output)
+
+        assertArrayEquals(
+            arrayOf(
+                ScanProgressPhase.STARTING,
+                ScanProgressPhase.SCANNER_WORKING,
+                ScanProgressPhase.RECEIVING_IMAGE,
+                ScanProgressPhase.READY,
+            ),
+            phases.toTypedArray(),
+        )
+    }
+
+    @Test
     fun `throws when the scanner reports busy`() {
         val transport = FakePrinterTransport {
             chunkedResponse("200 OK", body = "<ScannerStatus><ScannerState>BusyWithScanJob</ScannerState></ScannerStatus>")

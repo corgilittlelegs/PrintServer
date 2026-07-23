@@ -4,12 +4,15 @@ import com.hp.jipp.encoding.AttributeGroup.Companion.groupOf
 import com.hp.jipp.encoding.IppInputStream
 import com.hp.jipp.encoding.IppOutputStream
 import com.hp.jipp.encoding.IppPacket
+import com.hp.jipp.encoding.IntType
 import com.hp.jipp.encoding.Tag
 import com.hp.jipp.model.Operation
 import com.hp.jipp.model.Status
 import com.hp.jipp.model.Types
 import dev.jaspreet.printserver.jobs.JobQueue
 import dev.jaspreet.printserver.render.FakeRenderingPipeline
+import dev.jaspreet.printserver.scan.SupplyCartridge
+import dev.jaspreet.printserver.scan.SupplyStatus
 import dev.jaspreet.printserver.usb.FakePrinterTransport
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -37,10 +40,17 @@ class LocalIppServerTest {
     private fun start(
         pipeline: dev.jaspreet.printserver.render.RenderingPipeline = FakeRenderingPipeline(),
         capabilities: PrinterCapabilities = PrinterCapabilities.deskJet2300(URI.create("ipp://127.0.0.1:0/ipp/print")),
+        supplyStatusProvider: () -> SupplyStatus? = { null },
     ): Int {
         val q = JobQueue(pipeline, { FakePrinterTransport { ByteArray(0) } })
         queue = q
-        val s = LocalIppServer(port = 0, capabilities = capabilities, jobQueue = q, spoolDir = createTempDir())
+        val s = LocalIppServer(
+            port = 0,
+            capabilities = capabilities,
+            jobQueue = q,
+            spoolDir = createTempDir(),
+            supplyStatusProvider = supplyStatusProvider,
+        )
         s.start(bindAddress = null)
         server = s
         return s.actualPort
@@ -215,6 +225,60 @@ class LocalIppServerTest {
         val resp = ipp(port, IppPacket(Operation.getPrinterAttributes, 11, operationGroup()))
         assertEquals(2, resp[Tag.printerAttributes]!!.getValue(Types.queuedJobCount))
         release.countDown()
+    }
+
+    @Test
+    fun `get-printer-attributes includes supply marker attributes when available`() {
+        val port = start(
+            supplyStatusProvider = {
+                SupplyStatus(
+                    cartridges = listOf(
+                        SupplyCartridge(name = "Black cartridge", color = "Black", levelPercent = 63),
+                        SupplyCartridge(name = "Tri color cartridge", color = "Cyan Magenta Yellow", levelPercent = 12),
+                    ),
+                    sourcePath = "/DevMgmt/ConsumableConfigDyn.xml",
+                )
+            },
+        )
+
+        val resp = ipp(port, IppPacket(Operation.getPrinterAttributes, 12, operationGroup()))
+        val group = resp[Tag.printerAttributes]!!
+
+        assertEquals(listOf("Black cartridge", "Tri color cartridge"), group["marker-names"]!!.strings())
+        assertEquals(listOf("#000000", "#00FFFF#FF00FF#FFFF00"), group["marker-colors"]!!.strings())
+        assertEquals(
+            listOf(63, 12),
+            IntType.Set("marker-levels").coerce(group["marker-levels"]!!)!!.toList(),
+        )
+    }
+
+    @Test
+    fun `get-printer-attributes can return only requested marker attributes`() {
+        val port = start(
+            supplyStatusProvider = {
+                SupplyStatus(
+                    cartridges = listOf(SupplyCartridge(name = "Black cartridge", color = "Black", levelPercent = 63)),
+                    sourcePath = "/DevMgmt/ConsumableConfigDyn.xml",
+                )
+            },
+        )
+        val request = IppPacket(
+            Operation.getPrinterAttributes, 13,
+            groupOf(
+                Tag.operationAttributes,
+                Types.attributesCharset.of("utf-8"),
+                Types.attributesNaturalLanguage.of("en"),
+                Types.printerUri.of(URI.create("ipp://127.0.0.1/ipp/print")),
+                Types.requestedAttributes.of("marker-levels"),
+            ),
+        )
+
+        val resp = ipp(port, request)
+        val group = resp[Tag.printerAttributes]!!
+
+        assertEquals(listOf(63), IntType.Set("marker-levels").coerce(group["marker-levels"]!!)!!.toList())
+        assertEquals(null, group["marker-names"])
+        assertEquals(null, group.getValue(Types.printerName))
     }
 
     @Test

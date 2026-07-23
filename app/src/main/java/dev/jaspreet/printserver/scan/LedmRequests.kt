@@ -34,6 +34,18 @@ object LedmRequests {
             "Cookie: AccessCounter=new" +
             ZERO_FOOTER
 
+    fun deviceMgmtXmlRequest(path: String, host: String): String =
+        "GET $path HTTP/1.1\r\n" +
+            "Host: $host\r\n" +
+            "User-Agent: hplip\r\n" +
+            "Accept: text/xml\r\n" +
+            "Accept-Language: en-us,en\r\n" +
+            "Accept-Charset:utf-8\r\n" +
+            "Keep-Alive: 20\r\n" +
+            "Proxy-Connection: keep-alive\r\n" +
+            "Cookie: AccessCounter=new" +
+            ZERO_FOOTER
+
     /** [contentLength] must be the create-job XML body's byte length plus [ZERO_FOOTER]'s
      *  byte length -- this mirrors bb_ledm.c's own (unusual, but firmware-required)
      *  framing exactly: a real Content-Length header alongside a chunked-style zero
