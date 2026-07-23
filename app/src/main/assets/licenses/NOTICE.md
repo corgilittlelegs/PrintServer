@@ -7,6 +7,8 @@ projects. Their full license texts are alongside this file.
   (upstream archives: https://github.com/ArtifexSoftware/ghostpdl-downloads)
 - **HPLIP 3.24.4 (hpcups filter)** — GPL-2.0. Source: https://developers.hp.com/hp-linux-imaging-and-printing
 - **CUPS 2.4.10 (raster I/O)** — Apache-2.0. Source: https://github.com/OpenPrinting/cups
+- **HP JIPP Core 0.7.16 (IPP packet parsing)** — Apache-2.0. Source: https://github.com/HP/jipp
+
 
 Build scripts and any source patches applied to the above are in this
 repository's `native/` directory (`native/build-ghostscript.sh`,
