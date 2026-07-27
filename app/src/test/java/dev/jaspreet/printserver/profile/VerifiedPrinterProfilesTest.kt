@@ -75,6 +75,14 @@ class VerifiedPrinterProfilesTest {
             modelAliases = listOf("test model"),
             vendorId = 0x03F0,
             productId = 0x1234,
+            documentFormatsSupported = listOf("application/pdf"),
+            mediaSupported = listOf("iso_a4_210x297mm"),
+            mediaDefault = "iso_a4_210x297mm",
+            colorModesSupported = listOf("monochrome"),
+            qualityModesSupported = listOf("normal"),
+            qualityModeDefault = "normal",
+            resolutionsDpiSupported = listOf(300),
+            defaultResolutionDpi = 300,
         )
         val info = DeviceIdInfo(manufacturer = "HP", model = "test model")
 

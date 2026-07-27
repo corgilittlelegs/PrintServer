@@ -14,12 +14,17 @@ import com.hp.jipp.model.Operation
 import com.hp.jipp.model.Orientation
 import com.hp.jipp.model.PrintQuality
 import com.hp.jipp.model.Types
+import dev.jaspreet.printserver.profile.VerifiedPrinterProfile
+import dev.jaspreet.printserver.profile.VerifiedPrinterProfiles
 import java.net.URI
 import java.util.UUID
 
 /**
- * Hardcoded capabilities for a Tier-2 (host-based) printer — there is no
- * printer-side IPP to query, so the app is the source of truth.
+ * Tier-2 (host-based) printer capabilities — there is no printer-side IPP to query, so the app
+ * is the source of truth. Built from a [VerifiedPrinterProfile] (see [fromProfile]) so the same
+ * capability data feeds both the IPP `Get-Printer-Attributes` response ([asPrinterAttributes])
+ * and the mDNS TXT record ([toPrinterInfo] -> [TxtRecords.forIpp]) — one source, so clients
+ * never see mismatched offers between the two advertisement paths.
  */
 class PrinterCapabilities(
     val makeAndModel: String,
@@ -27,6 +32,16 @@ class PrinterCapabilities(
     val color: Boolean,
     val printerUri: URI,
     val uuid: UUID,
+    val mediaSupported: List<String>,
+    val mediaDefault: String,
+    val colorModesSupported: List<String>,
+    /** DPI values this printer's rendering pipeline actually produces — see
+     *  `NativeRenderingPipeline.dpiFor`. Must never include unreachable resolutions
+     *  (e.g. 1200dpi Photo mode) — see `PrintOptions.kt`. */
+    val resolutionsDpiSupported: List<Int>,
+    val defaultResolutionDpi: Int,
+    val qualityModesSupported: List<PrintQuality>,
+    val qualityModeDefault: PrintQuality,
 ) {
     private val createdAtNanos = System.nanoTime()
 
@@ -61,8 +76,8 @@ class PrinterCapabilities(
         Types.documentFormatSupported.of(formats),
         Types.colorSupported.of(color),
         Types.compressionSupported.of("none"),
-        Types.mediaDefault.of("iso_a4_210x297mm"),
-        Types.mediaSupported.of("iso_a4_210x297mm", "na_letter_8.5x11in"),
+        Types.mediaDefault.of(mediaDefault),
+        Types.mediaSupported.of(mediaSupported.map { KeywordOrName(it) }),
         Types.pdlOverrideSupported.of("attempted"),
         // Below: mandatory IPP Everywhere attributes. Without ippFeaturesSupported
         // advertising "ipp-everywhere" (plus the attributes IPP Everywhere requires
@@ -70,23 +85,14 @@ class PrinterCapabilities(
         // driverless-capable printer and fails with "no driver found" even though
         // the printer is otherwise fully reachable and functional over IPP.
         Types.ippFeaturesSupported.of("ipp-everywhere"),
-        Types.mediaColDatabase.of(
-            MediaColDatabase(
-                mediaSizeName = KeywordOrName("iso_a4_210x297mm"),
-                mediaSize = MediaColDatabase.MediaSize(IntOrIntRange(21000), IntOrIntRange(29700)),
-            ),
-            MediaColDatabase(
-                mediaSizeName = KeywordOrName("na_letter_8.5x11in"),
-                mediaSize = MediaColDatabase.MediaSize(IntOrIntRange(21590), IntOrIntRange(27940)),
-            ),
-        ),
-        Types.mediaColDefault.of(
-            MediaCol(mediaSizeName = KeywordOrName("iso_a4_210x297mm"), mediaSize = MediaCol.MediaSize(21000, 29700)),
-        ),
-        Types.printColorModeSupported.of(if (color) listOf("color", "monochrome") else listOf("monochrome")),
+        Types.mediaColDatabase.of(mediaSupported.map { name -> mediaColDatabaseEntry(name) }),
+        Types.mediaColDefault.of(mediaColEntry(mediaDefault)),
+        Types.printColorModeSupported.of(colorModesSupported),
         Types.printColorModeDefault.of(if (color) "color" else "monochrome"),
-        Types.printerResolutionSupported.of(Resolution(300, 300, ResolutionUnit.dotsPerInch)),
-        Types.printerResolutionDefault.of(Resolution(300, 300, ResolutionUnit.dotsPerInch)),
+        Types.printerResolutionSupported.of(
+            resolutionsDpiSupported.sorted().map { dpi -> Resolution(dpi, dpi, ResolutionUnit.dotsPerInch) },
+        ),
+        Types.printerResolutionDefault.of(Resolution(defaultResolutionDpi, defaultResolutionDpi, ResolutionUnit.dotsPerInch)),
         Types.sidesSupported.of("one-sided"),
         Types.sidesDefault.of("one-sided"),
         Types.copiesDefault.of(1),
@@ -97,8 +103,8 @@ class PrinterCapabilities(
         Types.orientationRequestedSupported.of(Orientation.portrait),
         Types.outputBinDefault.of(KeywordOrName("face-down")),
         Types.outputBinSupported.of(KeywordOrName("face-down")),
-        Types.printQualityDefault.of(PrintQuality.normal),
-        Types.printQualitySupported.of(PrintQuality.draft, PrintQuality.normal, PrintQuality.high),
+        Types.printQualityDefault.of(qualityModeDefault),
+        Types.printQualitySupported.of(qualityModesSupported),
         Types.pagesPerMinute.of(8),
         Types.printerInfo.of(makeAndModel),
         Types.printerLocation.of(""),
@@ -106,30 +112,92 @@ class PrinterCapabilities(
     )
 
     fun toPrinterInfo(): PrinterInfo =
-        PrinterInfo(makeAndModel, formats, color, uuid.toString(), urf = URF_TOKENS)
+        PrinterInfo(makeAndModel, formats, color, uuid.toString(), urf = urfTokens())
+
+    // PWG5100.13 URF tokens matching the resolution/quality/color-mode/media attributes
+    // declared in asPrinterAttributes() above. macOS's mDNS browse stage badges a Bonjour
+    // _ipp._tcp service as AirPrint-capable using this TXT key alone, before it ever opens
+    // an IPP connection — omit it and the printer shows up as an unclassified generic
+    // Bonjour service instead. Per PWG5100.13, RS is a single "-"-joined token listing every
+    // supported resolution (not one RS token per resolution), and PQ likewise lists every
+    // supported print-quality code in one token.
+    private fun urfTokens(): List<String> {
+        val pq = qualityModesSupported.map { it.code }.sorted().joinToString("-")
+        val rs = resolutionsDpiSupported.sorted().joinToString("-")
+        return listOf("V1.4", "CP1", "PQ$pq", "RS$rs", "W8", "SRGB24")
+    }
+
+    private fun mediaColDatabaseEntry(mediaSizeName: String): MediaColDatabase {
+        val (widthHundredthsMm, heightHundredthsMm) = mediaSizeHundredthsMm(mediaSizeName)
+        return MediaColDatabase(
+            mediaSizeName = KeywordOrName(mediaSizeName),
+            mediaSize = MediaColDatabase.MediaSize(IntOrIntRange(widthHundredthsMm), IntOrIntRange(heightHundredthsMm)),
+        )
+    }
+
+    private fun mediaColEntry(mediaSizeName: String): MediaCol {
+        val (widthHundredthsMm, heightHundredthsMm) = mediaSizeHundredthsMm(mediaSizeName)
+        return MediaCol(
+            mediaSizeName = KeywordOrName(mediaSizeName),
+            mediaSize = MediaCol.MediaSize(widthHundredthsMm, heightHundredthsMm),
+        )
+    }
 
     companion object {
-        // PWG5100.13 URF tokens matching the resolution/color-mode/media attributes
-        // declared in asPrinterAttributes() above. macOS's mDNS browse stage badges a
-        // Bonjour _ipp._tcp service as AirPrint-capable using this TXT key alone, before
-        // it ever opens an IPP connection — omit it and the printer shows up as an
-        // unclassified generic Bonjour service instead.
-        private val URF_TOKENS = listOf("V1.4", "CP1", "PQ3-4-5", "RS300", "W8", "SRGB24")
-
-        fun deskJet2300(printerUri: URI, uuid: UUID = STABLE_UUID): PrinterCapabilities =
-            PrinterCapabilities(
-                // Deliberately not the real HP model string: an authentic vendor
-                // model name in ty/printer-make-and-model can steer macOS's driver
-                // picker toward reconciling against Apple's bundled HP driver
-                // database instead of trusting the IPP-Everywhere self-declaration.
-                makeAndModel = "PrintServer Bridge",
-                formats = listOf("application/pdf", "image/pwg-raster", "image/jpeg"),
-                color = true,
-                printerUri = printerUri,
-                uuid = uuid,
-            )
-
         // Fixed so clients don't see a "new printer" after every app restart.
         private val STABLE_UUID: UUID = UUID.fromString("7c9e6679-7425-40de-944b-e07fc1f90ae7")
+
+        // Deliberately not the real HP model string: an authentic vendor model name in
+        // printer-make-and-model can steer macOS's driver picker toward reconciling against
+        // Apple's bundled HP driver database instead of trusting the IPP-Everywhere
+        // self-declaration.
+        private const val BRIDGE_MAKE_AND_MODEL = "PrintServer Bridge"
+
+        // PWG media size name -> (width, height) in hundredths of a millimeter, as required by
+        // IPP's media-col-database/media-col-default. Grows as profiles declare new media sizes.
+        private val MEDIA_SIZE_HUNDREDTHS_MM: Map<String, Pair<Int, Int>> = mapOf(
+            "iso_a4_210x297mm" to (21000 to 29700),
+            "na_letter_8.5x11in" to (21590 to 27940),
+        )
+
+        private fun mediaSizeHundredthsMm(name: String): Pair<Int, Int> =
+            MEDIA_SIZE_HUNDREDTHS_MM[name]
+                ?: throw IllegalArgumentException(
+                    "Unknown media size '$name' — add its dimensions to MEDIA_SIZE_HUNDREDTHS_MM",
+                )
+
+        private fun toJippQuality(name: String): PrintQuality = when (name) {
+            "draft" -> PrintQuality.draft
+            "normal" -> PrintQuality.normal
+            "high" -> PrintQuality.high
+            else -> throw IllegalArgumentException("Unknown print quality mode '$name'")
+        }
+
+        /** Builds capabilities from a verified profile — the profile-declared document
+         *  formats/media/color modes/quality modes/resolutions are advertised as-is, so a
+         *  profile can never offer a client more than its rendering pipeline can deliver. */
+        fun fromProfile(
+            profile: VerifiedPrinterProfile,
+            printerUri: URI,
+            uuid: UUID = STABLE_UUID,
+        ): PrinterCapabilities = PrinterCapabilities(
+            makeAndModel = BRIDGE_MAKE_AND_MODEL,
+            formats = profile.documentFormatsSupported,
+            color = profile.colorModesSupported.contains("color"),
+            printerUri = printerUri,
+            uuid = uuid,
+            mediaSupported = profile.mediaSupported,
+            mediaDefault = profile.mediaDefault,
+            colorModesSupported = profile.colorModesSupported,
+            resolutionsDpiSupported = profile.resolutionsDpiSupported,
+            defaultResolutionDpi = profile.defaultResolutionDpi,
+            qualityModesSupported = profile.qualityModesSupported.map(::toJippQuality),
+            qualityModeDefault = toJippQuality(profile.qualityModeDefault),
+        )
+
+        /** Convenience for the one verified profile that exists today; delegates to
+         *  [fromProfile] so tests and call sites share the exact same construction path. */
+        fun deskJet2300(printerUri: URI, uuid: UUID = STABLE_UUID): PrinterCapabilities =
+            fromProfile(VerifiedPrinterProfiles.DESKJET_2300, printerUri, uuid)
     }
 }

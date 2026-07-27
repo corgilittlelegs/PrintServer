@@ -247,8 +247,9 @@ class ServerService : Service() {
                 QueueState.refresh()
             },
         ).also { jobQueue = it; QueueState.attach(it) }
-        val caps = PrinterCapabilities.deskJet2300(
-            java.net.URI.create("ipp://${bindAddr.hostAddress}:$IPP_PORT/ipp/print")
+        val caps = PrinterCapabilities.fromProfile(
+            profile,
+            java.net.URI.create("ipp://${bindAddr.hostAddress}:$IPP_PORT/ipp/print"),
         )
         val supplyResult = querySupplyStatusWithRetry(usb, device)
         val ipp = LocalIppServer(

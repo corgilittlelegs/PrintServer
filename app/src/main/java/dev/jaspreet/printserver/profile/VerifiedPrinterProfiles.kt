@@ -24,6 +24,19 @@ object VerifiedPrinterProfiles {
             "hp deskjet 2300 all-in-one",
             "hp deskjet ink advantage 2300 all-in-one",
         ),
+        documentFormatsSupported = listOf("application/pdf", "image/pwg-raster", "image/jpeg"),
+        mediaSupported = listOf("iso_a4_210x297mm", "na_letter_8.5x11in"),
+        mediaDefault = "iso_a4_210x297mm",
+        colorModesSupported = listOf("color", "monochrome"),
+        qualityModesSupported = listOf("draft", "normal", "high"),
+        qualityModeDefault = "normal",
+        // NativeRenderingPipeline.dpiFor: DRAFT -> 300dpi, NORMAL/HIGH -> 600dpi (Best differs
+        // from Normal only via hpcups OutputMode, not resolution). The bundled PPD's fourth
+        // mode, Photo(1200dpi), is intentionally excluded: PrintOptions.kt documents that it has
+        // no reachable IPP print-quality mapping today, so it must not be advertised until one
+        // exists and an Android native fixture proves it works.
+        resolutionsDpiSupported = listOf(300, 600),
+        defaultResolutionDpi = 600,
     )
 
     val all: List<VerifiedPrinterProfile> = listOf(DESKJET_2300)

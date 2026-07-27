@@ -34,4 +34,21 @@ class TxtRecordsTest {
         assertFalse(txt.containsKey("UUID"))
         assertEquals("F", txt["color"])
     }
+
+    @Test
+    fun `passes a multi-resolution RS token through untouched`() {
+        // TxtRecords itself is resolution-agnostic — it just joins whatever URF tokens
+        // PrinterCapabilities computed (see PrinterCapabilitiesTest for the RS300-600
+        // derivation). This pins the join behavior for a multi-value RS token specifically,
+        // since PWG5100.13 packs all supported resolutions into one "-"-joined RS token.
+        val info = PrinterInfo(
+            makeAndModel = "Test Laser 9000",
+            formats = listOf("application/pdf"),
+            color = true,
+            uuid = null,
+            urf = listOf("V1.4", "PQ3-4-5", "RS300-600", "W8", "SRGB24"),
+        )
+        val txt = TxtRecords.forIpp(info)
+        assertEquals("V1.4,PQ3-4-5,RS300-600,W8,SRGB24", txt["URF"])
+    }
 }

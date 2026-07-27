@@ -2,15 +2,23 @@ package dev.jaspreet.printserver.ipp
 
 import com.hp.jipp.encoding.Tag
 import com.hp.jipp.model.Types
+import dev.jaspreet.printserver.jobs.PrintQuality
+import dev.jaspreet.printserver.profile.VerifiedPrinterProfiles
+import dev.jaspreet.printserver.render.NativeRenderingPipeline
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
+import java.lang.reflect.Method
 import java.net.URI
 
 class PrinterCapabilitiesTest {
 
-    private val caps = PrinterCapabilities.deskJet2300(URI.create("ipp://192.168.1.5:8631/ipp/print"))
+    private val caps = PrinterCapabilities.fromProfile(
+        VerifiedPrinterProfiles.DESKJET_2300,
+        URI.create("ipp://192.168.1.5:8631/ipp/print"),
+    )
 
     @Test
     fun `advertises pdf as the default with pwg raster and jpeg also supported`() {
@@ -77,5 +85,60 @@ class PrinterCapabilitiesTest {
             group.getValues(Types.printQualitySupported),
         )
         assertEquals(com.hp.jipp.model.PrintQuality.normal, group.getValue(Types.printQualityDefault))
+    }
+
+    // --- Task 4: resolution/quality advertisement must match what NativeRenderingPipeline
+    // actually produces, not aspirational printer-spec numbers. ---
+
+    @Test
+    fun `advertises exactly the resolutions the tier2 renderer can produce for every reachable quality`() {
+        val group = caps.asPrinterAttributes()
+        val advertisedDpis = group.getValues(Types.printerResolutionSupported).map { it.x }.toSet()
+
+        // Ground truth: NativeRenderingPipeline.dpiFor(quality) for every PrintQuality reachable
+        // from IPP (DRAFT/NORMAL/HIGH — Photo/1200dpi is intentionally unreachable per
+        // PrintOptions.kt, so it has no enum value and can't leak into this set).
+        val reachableDpis = PrintQuality.entries.map { quality -> dpiForViaReflection(quality) }.toSet()
+
+        assertEquals(reachableDpis, advertisedDpis)
+        assertFalse("must never advertise the unreachable 1200dpi Photo mode", advertisedDpis.contains(1200))
+    }
+
+    @Test
+    fun `default resolution is 600dpi matching normal quality default`() {
+        val group = caps.asPrinterAttributes()
+        val default = group.getValue(Types.printerResolutionDefault)!!
+        assertEquals(600, default.x)
+        assertEquals(600, default.y)
+    }
+
+    @Test
+    fun `URF RS token lists every supported resolution in one PWG5100_13 token`() {
+        val info = caps.toPrinterInfo()
+        assertTrue("expected RS300-600 in URF tokens, got ${info.urf}", info.urf.contains("RS300-600"))
+        assertFalse(info.urf.any { it.startsWith("RS") && it.contains("1200") })
+    }
+
+    @Test
+    fun `URF PQ token lists every supported print-quality code in one token`() {
+        val info = caps.toPrinterInfo()
+        assertTrue("expected PQ3-4-5 in URF tokens, got ${info.urf}", info.urf.contains("PQ3-4-5"))
+    }
+
+    /**
+     * NativeRenderingPipeline.dpiFor is private; reflection keeps this test coupled to the
+     * pipeline's *real* behavior (so it fails if that mapping ever changes) instead of
+     * duplicating the DRAFT->300/NORMAL,HIGH->600 logic by hand and risking the two silently
+     * drifting apart. Constructing the pipeline itself is safe under isReturnDefaultValues=true
+     * (app/build.gradle.kts) even though it references android.graphics.BitmapFactory, since
+     * that class is only touched inside render(), never in the constructor.
+     */
+    private fun dpiForViaReflection(quality: PrintQuality): Int {
+        val pipelineClass = NativeRenderingPipeline::class.java
+        val method: Method = pipelineClass.getDeclaredMethod("dpiFor", PrintQuality::class.java)
+        method.isAccessible = true
+        val instance = pipelineClass.getDeclaredConstructor(File::class.java, String::class.java)
+            .newInstance(File("/tmp"), "/tmp/unused.ppd")
+        return method.invoke(instance, quality) as Int
     }
 }

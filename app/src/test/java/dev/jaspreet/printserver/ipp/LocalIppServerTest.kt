@@ -354,6 +354,17 @@ class LocalIppServerTest {
             color = false,
             printerUri = URI.create("ipp://127.0.0.1:0/ipp/print"),
             uuid = java.util.UUID.randomUUID(),
+            mediaSupported = listOf("iso_a4_210x297mm"),
+            mediaDefault = "iso_a4_210x297mm",
+            colorModesSupported = listOf("monochrome"),
+            resolutionsDpiSupported = listOf(300, 600),
+            defaultResolutionDpi = 600,
+            qualityModesSupported = listOf(
+                com.hp.jipp.model.PrintQuality.draft,
+                com.hp.jipp.model.PrintQuality.normal,
+                com.hp.jipp.model.PrintQuality.high,
+            ),
+            qualityModeDefault = com.hp.jipp.model.PrintQuality.normal,
         )
         val port = start(capabilities = monoCaps)
         val request = IppPacket(
