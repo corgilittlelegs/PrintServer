@@ -116,4 +116,99 @@ class NativePipelineFixtureTest {
             )
         }
     }
+
+    // --- Quality/color coverage (Task 15) -------------------------------------------------
+    //
+    // The checklist asks to "run a fixture through Draft/Normal/High" and, separately, "run a
+    // fixture through RGB and KGray" — read as 3 quality runs + 2 color runs (5 total), each
+    // holding the other dimension at a sensible default, rather than the full 3x2=6
+    // cross-product. NORMAL/COLOR is already exercised end-to-end by [rendersTwoPagePdfToPcl]
+    // above, so the quality methods below hold color at COLOR (the common default) and the
+    // color methods hold quality at NORMAL, giving every quality value and every color value
+    // at least one dedicated run without duplicating the full matrix.
+    //
+    // Each combination gets its own small @Test method (rather than one parametrized loop) so
+    // a failure on, say, HIGH quality reports a distinct method name/stack trace and saves only
+    // the artifacts relevant to that scenario — consistent with the two tests above.
+    //
+    // Size/hash invariant: deliberately NOT asserted. hpcups' PCL3-GUI output is compressed
+    // per-row (RLE/delta-style), so a higher dpi or different color model does not guarantee
+    // strictly larger bytes for a given input image — a mostly-white or mostly-black tiny
+    // fixture could compress smaller at 600dpi than at 300dpi, or KGray (1 channel) could come
+    // out larger or smaller than RGB (3 channels) depending on dithering. Unlike the one-page
+    // vs. two-page comparison above (same quality/color, strictly more source content), there's
+    // no safe monotonic relationship here to assert across devices/hpcups builds, so per the
+    // checklist's "only if stable" hedge this is skipped in favor of just the non-empty +
+    // no-exception checks.
+    //
+    // Threshold: DRAFT is 300dpi on the same tiny single-page fixture used by
+    // [rendersOnePagePdfToPcl] (600dpi, >1024 bytes there), so a smaller conservative floor
+    // (>100 bytes) is used here instead of assuming the >1024 threshold still holds at the
+    // lower resolution.
+
+    @Test
+    fun rendersDraftQualityToPcl() {
+        runQualityColorFixture("draft-quality", PrintQuality.DRAFT, ColorMode.COLOR)
+    }
+
+    @Test
+    fun rendersNormalQualityToPcl() {
+        runQualityColorFixture("normal-quality", PrintQuality.NORMAL, ColorMode.COLOR)
+    }
+
+    @Test
+    fun rendersHighQualityToPcl() {
+        runQualityColorFixture("high-quality", PrintQuality.HIGH, ColorMode.COLOR)
+    }
+
+    @Test
+    fun rendersRgbColorToPcl() {
+        runQualityColorFixture("rgb-color", PrintQuality.NORMAL, ColorMode.COLOR)
+    }
+
+    @Test
+    fun rendersKGrayColorToPcl() {
+        runQualityColorFixture("kgray-color", PrintQuality.NORMAL, ColorMode.MONOCHROME)
+    }
+
+    /**
+     * Shared body for the five quality/color scenarios above: renders [smokePdf] through
+     * [NativeRenderingPipeline.render] with the given [quality]/[colorMode], asserts non-empty,
+     * ESC-prefixed PCL output, and — on any exception (including a native crash surfaced by
+     * `HpcupsNative`'s guard machinery) — saves the input/output for this specific [scenario]
+     * to cacheDir/fixture-failure before failing.
+     */
+    private fun runQualityColorFixture(scenario: String, quality: PrintQuality, colorMode: ColorMode) {
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val testCtx = InstrumentationRegistry.getInstrumentation().context
+        val workDir = File(ctx.cacheDir, "fixture-work-$scenario").apply { mkdirs() }
+        val ppdPath = PpdAsset.extract(ctx).absolutePath
+        val pipeline = NativeRenderingPipeline(workDir, ppdPath)
+
+        val pdf = File(ctx.cacheDir, "fixture-$scenario.pdf")
+        val out = File(ctx.cacheDir, "fixture-$scenario.pcl")
+        val failureDir = File(ctx.cacheDir, "fixture-failure")
+        testCtx.assets.open("smoke.pdf").use { input -> pdf.outputStream().use { input.copyTo(it) } }
+
+        try {
+            pipeline.render(pdf, out, "application/pdf", quality, colorMode)
+            assertTrue(
+                "[$scenario] PCL output should be non-trivial (${out.length()} bytes)",
+                out.length() > 100,
+            )
+            assertEquals(
+                "[$scenario] PCL output should start with ESC",
+                0x1B,
+                out.inputStream().use { it.read() },
+            )
+        } catch (e: Throwable) {
+            failureDir.mkdirs()
+            pdf.copyTo(File(failureDir, "fixture-$scenario.pdf"), overwrite = true)
+            if (out.exists()) out.copyTo(File(failureDir, "fixture-$scenario.pcl"), overwrite = true)
+            throw AssertionError(
+                "[$scenario] native pipeline fixture failed; artifacts saved to ${failureDir.absolutePath} " +
+                    "(pull with `adb pull`), inspect with `adb logcat -s hpcupsjni gsjni`", e,
+            )
+        }
+    }
 }
