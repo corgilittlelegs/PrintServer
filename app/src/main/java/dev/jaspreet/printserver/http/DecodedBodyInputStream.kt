@@ -17,9 +17,9 @@ import java.io.InputStream
  * exhaustion, [from] is positioned exactly at the start of whatever comes next (the next
  * pipelined request's HTTP head, or EOF).
  *
- * Enforces [maxBytes] cumulatively as bytes are consumed, matching [BodyReader] and
- * [BodySpooler]'s existing cap behavior (checked against the declared `Content-Length` up front,
- * or cumulatively per chunk for chunked bodies, since there's no advance total to check there).
+ * Enforces [maxBytes] cumulatively as bytes are consumed, matching [BodyReader]'s existing cap
+ * behavior (checked against the declared `Content-Length` up front, or cumulatively per chunk
+ * for chunked bodies, since there's no advance total to check there).
  */
 class DecodedBodyInputStream(
     head: HttpHead,

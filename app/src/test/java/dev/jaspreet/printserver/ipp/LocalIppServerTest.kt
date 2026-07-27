@@ -683,4 +683,116 @@ class LocalIppServerTest {
             assertNotNull(resp2[Tag.jobAttributes]!!.getValue(Types.jobId))
         }
     }
+
+    /** Writes a chunked-encoded IPP request whose body is [packetBytes] followed by each of
+     *  [documentChunks], one HTTP chunk per element — lets a test control exactly how many
+     *  document bytes have reached the server (and been spooled) before a later chunk pushes
+     *  the cumulative body size over a cap, unlike the fixed-Content-Length `ipp()`/
+     *  `writeIppRequest()` helpers (whose over-cap case is rejected before any file is created —
+     *  see the Content-Length branch of DecodedBodyInputStream's constructor). */
+    private fun writeChunkedIppRequest(output: java.io.OutputStream, packetBytes: ByteArray, documentChunks: List<ByteArray>) {
+        val head = "POST /ipp/print HTTP/1.1\r\n" +
+            "Host: 127.0.0.1\r\n" +
+            "Content-Type: application/ipp\r\n" +
+            "Transfer-Encoding: chunked\r\n" +
+            "Connection: keep-alive\r\n\r\n"
+        output.write(head.toByteArray(Charsets.ISO_8859_1))
+        for (c in listOf(packetBytes) + documentChunks) {
+            if (c.isEmpty()) continue
+            output.write((c.size.toString(16) + "\r\n").toByteArray(Charsets.ISO_8859_1))
+            output.write(c)
+            output.write("\r\n".toByteArray(Charsets.ISO_8859_1))
+        }
+        output.write("0\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+        output.flush()
+    }
+
+    @Test
+    fun `print-job deletes the partially-spooled file when a chunked document exceeds the cap mid-stream`() {
+        val q = JobQueue(FakeRenderingPipeline(), { FakePrinterTransport { ByteArray(0) } })
+        queue = q
+        val caps = PrinterCapabilities.deskJet2300(URI.create("ipp://127.0.0.1:0/ipp/print"))
+        val dir = createTempDir()
+        spoolDir = dir
+        // Generous enough that the small IPP header packet plus one document chunk both fit
+        // comfortably, but a third chunk cannot — so streamToFile() has genuinely already
+        // written earlier chunks to the spool file by the time the cap trips.
+        val tinyLimitServer = LocalIppServer(port = 0, capabilities = caps, jobQueue = q, spoolDir = dir, maxDocumentBytes = 2000)
+        tinyLimitServer.start(bindAddress = null)
+        server = tinyLimitServer
+
+        val packetBytes = ByteArrayOutputStream()
+            .also { IppOutputStream(it).write(IppPacket(Operation.printJob, 80, operationGroup())) }
+            .toByteArray()
+        Socket("127.0.0.1", tinyLimitServer.actualPort).use { socket ->
+            val out = socket.getOutputStream()
+            val chunk = ByteArray(900) { 'A'.code.toByte() }
+            writeChunkedIppRequest(out, packetBytes, listOf(chunk, chunk, chunk)) // 2700 doc bytes > 2000 cap
+            val resp = readIppResponse(socket.getInputStream())
+            assertEquals(Status.clientErrorRequestEntityTooLarge, resp.status)
+        }
+
+        val filesInSpoolDir = dir.listFiles()?.toList() ?: emptyList()
+        assertEquals(
+            "streamToFile must delete the partially-spooled file on failure, not leave a truncated document behind",
+            0,
+            filesInSpoolDir.size,
+        )
+    }
+
+    @Test
+    fun `send-document truncates the reserved spool file back to empty when a chunked document exceeds the cap mid-stream`() {
+        val q = JobQueue(FakeRenderingPipeline(), { FakePrinterTransport { ByteArray(0) } })
+        queue = q
+        val caps = PrinterCapabilities.deskJet2300(URI.create("ipp://127.0.0.1:0/ipp/print"))
+        val dir = createTempDir()
+        spoolDir = dir
+        val tinyLimitServer = LocalIppServer(port = 0, capabilities = caps, jobQueue = q, spoolDir = dir, maxDocumentBytes = 2000)
+        tinyLimitServer.start(bindAddress = null)
+        server = tinyLimitServer
+
+        val createResp = ipp(tinyLimitServer.actualPort, IppPacket(Operation.createJob, 81, operationGroup()))
+        val jobId = createResp[Tag.jobAttributes]!!.getValue(Types.jobId)!!
+        val job = queue!!.get(jobId)!!
+        assertEquals(0L, job.spoolFile.length())
+
+        val sendPacketBytes = ByteArrayOutputStream()
+            .also {
+                IppOutputStream(it).write(
+                    IppPacket(
+                        Operation.sendDocument, 82,
+                        groupOf(
+                            Tag.operationAttributes,
+                            Types.attributesCharset.of("utf-8"),
+                            Types.attributesNaturalLanguage.of("en"),
+                            Types.printerUri.of(URI.create("ipp://127.0.0.1/ipp/print")),
+                            Types.jobId.of(jobId),
+                        ),
+                    ),
+                )
+            }
+            .toByteArray()
+        Socket("127.0.0.1", tinyLimitServer.actualPort).use { socket ->
+            val out = socket.getOutputStream()
+            val chunk = ByteArray(900) { 'B'.code.toByte() }
+            writeChunkedIppRequest(out, sendPacketBytes, listOf(chunk, chunk, chunk)) // 2700 doc bytes > 2000 cap
+            val resp = readIppResponse(socket.getInputStream())
+            assertEquals(Status.clientErrorRequestEntityTooLarge, resp.status)
+        }
+
+        // The reserved spool file is not ours to delete — it must be restored to exactly the
+        // (empty) length it had before this failed Send-Document call, not left holding
+        // whichever chunks happened to be written before the cap tripped.
+        assertTrue("reserved spool file must still exist after a failed append", job.spoolFile.exists())
+        assertEquals(
+            "reserved spool file must be truncated back to its pre-call length, not left partially written",
+            0L,
+            job.spoolFile.length(),
+        )
+        assertEquals(
+            "the job must remain PENDING — a failed Send-Document must never enqueue it",
+            dev.jaspreet.printserver.jobs.JobState.PENDING,
+            job.state,
+        )
+    }
 }
