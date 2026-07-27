@@ -424,9 +424,16 @@ class ServerService : Service() {
     // lifetime is already serialized by legacySession's own lock. A separate usbIoLock would
     // just be a second, redundant lock around the same field for the same call paths, so it
     // has been removed rather than kept alongside legacySession's lock. (stopPipeline()'s own
-    // `legacyTransport?.close()` on teardown was never covered by usbIoLock either — it runs
-    // after jobQueue.shutdown() has already quiesced the writer thread — so removing usbIoLock
-    // doesn't change that path's guarantees.)
+    // `legacyTransport?.close()` on teardown was never covered by usbIoLock either, so removing
+    // usbIoLock doesn't change that path's guarantees — but note those guarantees are weak: a
+    // known, pre-existing, separate gap is that stopPipeline() closes legacyTransport directly,
+    // without going through legacySession's lock, and neither jobQueue.shutdown() (interrupt +
+    // shutdownNow(), no join()/awaitTermination()) nor localEsclServer.stop() actually waits for
+    // an in-flight write/scan to finish first — and writeExclusive deliberately uses a plain
+    // lock() rather than lockInterruptibly() so an in-flight write survives the interrupt and
+    // keeps running. So an in-flight write or scan can still race stopPipeline()'s close during
+    // service teardown. Fixing that is out of Task 13's scope (steady-state scan-vs-print
+    // contention, not teardown ordering) and is tracked as a separate follow-up.)
     private fun legacyTransportFor(
         usb: UsbPrinterManager,
         device: android.hardware.usb.UsbDevice,
