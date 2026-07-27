@@ -2,7 +2,7 @@ package dev.jaspreet.printserver.jobs
 
 import android.util.Log
 import dev.jaspreet.printserver.render.RenderingPipeline
-import dev.jaspreet.printserver.usb.UsbTransport
+import dev.jaspreet.printserver.usb.LegacyPrinterSession
 import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -20,7 +20,10 @@ import kotlin.concurrent.thread
  */
 class JobQueue(
     private val pipeline: RenderingPipeline,
-    private val transportProvider: () -> UsbTransport,
+    /** Shared with Raw9100Relay so both writers to the legacy USB transport are mutually
+     *  exclusive — see [LegacyPrinterSession] for why unguarded interleaved writes corrupt
+     *  the printer's byte stream. */
+    private val legacySession: LegacyPrinterSession,
     private val renderTimeoutMs: Long = 120_000,
     /** Called at most once if a render hangs past [renderTimeoutMs]. The native
      *  libraries aren't reentrant and can't be safely interrupted mid-call, so a
@@ -261,13 +264,16 @@ class JobQueue(
      * loading it whole — multi-page color output at 300dpi can be tens of MB.
      */
     private fun writeToUsb(rendered: File) {
-        val transport = transportProvider()
-        val buf = ByteArray(65536)
-        rendered.inputStream().use { input ->
-            while (true) {
-                val n = input.read(buf)
-                if (n < 0) break
-                transport.write(buf, 0, n)
+        // Held for the whole multi-chunk write, not re-acquired per chunk — a raw-9100
+        // client's write must never land between two chunks of the same job.
+        legacySession.writeExclusive("print-job") { transport ->
+            val buf = ByteArray(65536)
+            rendered.inputStream().use { input ->
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    transport.write(buf, 0, n)
+                }
             }
         }
     }

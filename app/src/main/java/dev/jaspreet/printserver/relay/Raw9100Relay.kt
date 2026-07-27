@@ -1,6 +1,7 @@
 package dev.jaspreet.printserver.relay
 
-import dev.jaspreet.printserver.usb.UsbTransport
+import android.util.Log
+import dev.jaspreet.printserver.usb.LegacyPrinterSession
 import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -14,7 +15,9 @@ import java.util.concurrent.Executors
  */
 class Raw9100Relay(
     private val port: Int,
-    private val transportProvider: () -> UsbTransport,
+    /** Shared with JobQueue so a raw client's writes can never interleave with an
+     *  in-progress Tier 2 rendered print job's writes — see [LegacyPrinterSession]. */
+    private val legacySession: LegacyPrinterSession,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var currentClient: Socket? = null
@@ -36,25 +39,42 @@ class Raw9100Relay(
     private fun handle(client: Socket) {
         currentClient = client
         client.soTimeout = 60_000
-        val transport = transportProvider()
-        val buf = ByteArray(65536)
-        val input = client.getInputStream()
-        try {
-            while (true) {
-                val n = input.read(buf)
-                if (n < 0) break
-                transport.write(buf, 0, n)
+        // Acquired once for the whole connection (not per chunk): a raw-9100 session is one
+        // logical print stream from the printer's point of view, so once it wins the lock it
+        // holds the transport exclusively until the client disconnects — a JobQueue job must
+        // not be able to squeeze a chunk in between two of this client's writes either.
+        // If a Tier 2 job is already mid-write, wait briefly rather than corrupt the stream
+        // by writing concurrently, and give up (closing the connection) if it doesn't free up.
+        val result = legacySession.tryWriteExclusive("raw-9100 client (${client.inetAddress?.hostAddress})") { transport ->
+            val buf = ByteArray(65536)
+            val input = client.getInputStream()
+            try {
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    transport.write(buf, 0, n)
+                }
+            } catch (_: IOException) {
+                // client gone or printer stalled; drop the connection
             }
-        } catch (_: IOException) {
-            // client gone or printer stalled; drop the connection
-        } finally {
-            currentClient = null
         }
+        if (result == null) {
+            Log.w(
+                TAG,
+                "raw 9100 client connection rejected: legacy printer transport busy with an active print job",
+            )
+            try { client.close() } catch (_: IOException) {}
+        }
+        currentClient = null
     }
 
     fun stop() {
         try { serverSocket?.close() } catch (_: IOException) {}
         try { currentClient?.close() } catch (_: IOException) {}
         executor.shutdownNow()
+    }
+
+    companion object {
+        private const val TAG = "Raw9100Relay"
     }
 }

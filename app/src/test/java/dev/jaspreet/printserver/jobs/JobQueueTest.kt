@@ -2,6 +2,7 @@ package dev.jaspreet.printserver.jobs
 
 import dev.jaspreet.printserver.render.FakeRenderingPipeline
 import dev.jaspreet.printserver.usb.FakePrinterTransport
+import dev.jaspreet.printserver.usb.LegacyPrinterSession
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -34,7 +35,7 @@ class JobQueueTest {
     fun `job runs through pipeline and lands on the printer`() {
         val printer = FakePrinterTransport { ByteArray(0) }
         val done = CountDownLatch(1)
-        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), { printer }) { done.countDown() }
+        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), LegacyPrinterSession { printer }) { done.countDown() }
         queue = q
         val id = q.submit(pdf(), "test-doc")
         assertTrue(done.await(5, TimeUnit.SECONDS))
@@ -48,7 +49,7 @@ class JobQueueTest {
         val done = CountDownLatch(1)
         val q = JobQueue(
             FakeRenderingPipeline(failWith = IOException("bad pdf")),
-            { FakePrinterTransport { ByteArray(0) } },
+            LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
         ) { done.countDown() }
         queue = q
         val id = q.submit(spool, "broken-doc")
@@ -71,7 +72,7 @@ class JobQueueTest {
                 output.writeBytes("X".toByteArray())
             }
         }
-        val q = JobQueue(blockingPipeline, { FakePrinterTransport { ByteArray(0) } }) {}
+        val q = JobQueue(blockingPipeline, LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } }) {}
         queue = q
         q.submit(pdf(), "job-a")                      // occupies the worker
         assertTrue(started.await(5, TimeUnit.SECONDS))
@@ -83,7 +84,7 @@ class JobQueueTest {
 
     @Test
     fun `unknown job id returns null`() {
-        val q = JobQueue(FakeRenderingPipeline(), { FakePrinterTransport { ByteArray(0) } }) {}
+        val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } }) {}
         queue = q
         assertNull(q.get(999))
     }
@@ -94,7 +95,7 @@ class JobQueueTest {
         val done = CountDownLatch(1)
         val states = java.util.Collections.synchronizedList(mutableListOf<JobState>())
         val q = JobQueue(
-            FakeRenderingPipeline("PCL!".toByteArray()), { printer },
+            FakeRenderingPipeline("PCL!".toByteArray()), LegacyPrinterSession { printer },
             onJobStateChanged = { job -> states += job.state },
         ) { done.countDown() }
         queue = q
@@ -107,7 +108,7 @@ class JobQueueTest {
     fun `submitted job carries the client address through to PrintJob`() {
         val printer = FakePrinterTransport { ByteArray(0) }
         val done = CountDownLatch(1)
-        val q = JobQueue(FakeRenderingPipeline(), { printer }) { done.countDown() }
+        val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { printer }) { done.countDown() }
         queue = q
         val id = q.submit(pdf(), "test-doc", clientAddress = "10.0.0.5")
         assertTrue(done.await(5, TimeUnit.SECONDS))
@@ -130,7 +131,7 @@ class JobQueueTest {
         }
         val states = java.util.Collections.synchronizedList(mutableListOf<JobState>())
         val q = JobQueue(
-            blockingPipeline, { FakePrinterTransport { ByteArray(0) } },
+            blockingPipeline, LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
             onJobStateChanged = { job -> states += job.state },
         ) {}
         queue = q
@@ -156,7 +157,7 @@ class JobQueueTest {
         }
         val states = java.util.Collections.synchronizedList(mutableListOf<JobState>())
         val q = JobQueue(
-            blockingPipeline, { FakePrinterTransport { ByteArray(0) } },
+            blockingPipeline, LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
             renderTimeoutMs = 100,
             onJobStateChanged = { job -> states += job.state },
         ) {}
@@ -195,7 +196,7 @@ class JobQueueTest {
         }
         val stuck = CountDownLatch(1)
         val q = JobQueue(
-            pipeline, { FakePrinterTransport { ByteArray(0) } },
+            pipeline, LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
             renderTimeoutMs = 100,
             onPipelineStuck = { stuck.countDown() },
         )
@@ -244,7 +245,7 @@ class JobQueueTest {
         }
         val stuck = CountDownLatch(1)
         val q = JobQueue(
-            pipeline, { FakePrinterTransport { ByteArray(0) } },
+            pipeline, LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
             renderTimeoutMs = 100,
             onPipelineStuck = { stuck.countDown() },
         )
@@ -280,7 +281,7 @@ class JobQueueTest {
         val finishedAll = CountDownLatch(201)
         val q = JobQueue(
             FakeRenderingPipeline(failWith = IOException("bad pdf")),
-            { FakePrinterTransport { ByteArray(0) } },
+            LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
         ) { done.incrementAndGet(); finishedAll.countDown() }
         queue = q
         val firstSpool = pdf()
@@ -304,7 +305,7 @@ class JobQueueTest {
             }
         }
         val done = CountDownLatch(1)
-        val q = JobQueue(pipeline, { FakePrinterTransport { ByteArray(0) } }) { done.countDown() }
+        val q = JobQueue(pipeline, LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } }) { done.countDown() }
         queue = q
         val spool = pdf()
         spool.writeText("original-bytes")
@@ -330,7 +331,7 @@ class JobQueueTest {
     fun `retry on a non-ABORTED job returns null`() {
         val printer = FakePrinterTransport { ByteArray(0) }
         val done = CountDownLatch(1)
-        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), { printer }) { done.countDown() }
+        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), LegacyPrinterSession { printer }) { done.countDown() }
         queue = q
         val id = q.submit(pdf(), "ok-doc")
         assertTrue(done.await(5, TimeUnit.SECONDS))
@@ -340,7 +341,7 @@ class JobQueueTest {
 
     @Test
     fun `retry on an unknown job id returns null`() {
-        val q = JobQueue(FakeRenderingPipeline(), { FakePrinterTransport { ByteArray(0) } }) {}
+        val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } }) {}
         queue = q
         assertNull(q.retry(999))
     }
@@ -350,7 +351,7 @@ class JobQueueTest {
         val done = java.util.concurrent.CountDownLatch(201)
         val q = JobQueue(
             FakeRenderingPipeline(failWith = IOException("bad pdf")),
-            { FakePrinterTransport { ByteArray(0) } },
+            LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
         ) { done.countDown() }
         queue = q
         val firstId = q.submit(pdf(), "job-0")
@@ -374,7 +375,7 @@ class JobQueueTest {
                 output.writeBytes("X".toByteArray())
             }
         }
-        val q = JobQueue(blockingPipeline, { FakePrinterTransport { ByteArray(0) } }) {}
+        val q = JobQueue(blockingPipeline, LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } }) {}
         queue = q
         val first = q.submit(pdf(), "job-a")   // occupies the worker (PROCESSING)
         assertTrue(started.await(5, TimeUnit.SECONDS))
@@ -392,7 +393,7 @@ class JobQueueTest {
     fun `queuePosition on a terminal or unknown job returns null`() {
         val printer = FakePrinterTransport { ByteArray(0) }
         val done = CountDownLatch(1)
-        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), { printer }) { done.countDown() }
+        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), LegacyPrinterSession { printer }) { done.countDown() }
         queue = q
         val id = q.submit(pdf(), "ok-doc")
         assertTrue(done.await(5, TimeUnit.SECONDS))
@@ -405,7 +406,7 @@ class JobQueueTest {
         val printer = FakePrinterTransport { ByteArray(0) }
         val done = CountDownLatch(1)
         val pipeline = FakeRenderingPipeline("PCL!".toByteArray())
-        val q = JobQueue(pipeline, { printer }) { done.countDown() }
+        val q = JobQueue(pipeline, LegacyPrinterSession { printer }) { done.countDown() }
         queue = q
         q.submit(pdf(), "test-doc", quality = PrintQuality.HIGH, colorMode = ColorMode.MONOCHROME)
         assertTrue(done.await(5, TimeUnit.SECONDS))
@@ -418,7 +419,7 @@ class JobQueueTest {
         val printer = FakePrinterTransport { ByteArray(0) }
         val done = CountDownLatch(1)
         val pipeline = FakeRenderingPipeline("PCL!".toByteArray())
-        val q = JobQueue(pipeline, { printer }) { done.countDown() }
+        val q = JobQueue(pipeline, LegacyPrinterSession { printer }) { done.countDown() }
         queue = q
         q.submit(pdf(), "test-doc")
         assertTrue(done.await(5, TimeUnit.SECONDS))
@@ -432,7 +433,7 @@ class JobQueueTest {
         val done = CountDownLatch(1)
         val spool = pdf()
         val expectedSize = spool.length()
-        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), { printer }) { done.countDown() }
+        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), LegacyPrinterSession { printer }) { done.countDown() }
         queue = q
         val id = q.submit(spool, "test-doc")
         assertTrue(done.await(5, TimeUnit.SECONDS))
@@ -451,7 +452,7 @@ class JobQueueTest {
         val done = CountDownLatch(1)
         val q = JobQueue(
             FakeRenderingPipeline(failWith = IOException("bad pdf")),
-            { FakePrinterTransport { ByteArray(0) } },
+            LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
         ) { done.countDown() }
         queue = q
         val id = q.submit(spool, "broken-doc")
@@ -465,7 +466,7 @@ class JobQueueTest {
     fun `spooledBytes is 0 while reserved and set only once enqueue() delivers the document`() {
         val printer = FakePrinterTransport { ByteArray(0) }
         val done = CountDownLatch(1)
-        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), { printer }) { done.countDown() }
+        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), LegacyPrinterSession { printer }) { done.countDown() }
         queue = q
         val spool = File.createTempFile("job", ".pdf").also { tempFiles += it } // empty, as reserve() expects
         val id = q.reserve(spool, "two-phase-doc")
@@ -493,7 +494,7 @@ class JobQueueTest {
         val finished = CountDownLatch(1)
         val q = JobQueue(
             FakeRenderingPipeline("PCL!".toByteArray()),
-            { printer },
+            LegacyPrinterSession { printer },
             onJobStateChanged = { stateChanges += it.state },
             onJobFinished = { finished.countDown() },
         )
@@ -516,7 +517,7 @@ class JobQueueTest {
     fun `fail is a no-op for a job that already left PENDING`() {
         val printer = FakePrinterTransport { ByteArray(0) }
         val done = CountDownLatch(1)
-        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), { printer }) { done.countDown() }
+        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), LegacyPrinterSession { printer }) { done.countDown() }
         queue = q
         val id = q.submit(pdf(), "test-doc")
         assertTrue(done.await(5, TimeUnit.SECONDS))
@@ -529,7 +530,7 @@ class JobQueueTest {
     @Test
     fun `fail on an unknown id returns false`() {
         val printer = FakePrinterTransport { ByteArray(0) }
-        val q = JobQueue(FakeRenderingPipeline(), { printer })
+        val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { printer })
         queue = q
         assertFalse(q.fail(999, "request-entity-too-large"))
     }

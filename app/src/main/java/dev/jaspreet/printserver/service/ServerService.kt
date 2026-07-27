@@ -50,6 +50,7 @@ import dev.jaspreet.printserver.scan.LedmSupplyStatus
 import dev.jaspreet.printserver.scan.SupplyStatus
 import dev.jaspreet.printserver.usb.DeviceId
 import dev.jaspreet.printserver.usb.DeviceIdInfo
+import dev.jaspreet.printserver.usb.LegacyPrinterSession
 import dev.jaspreet.printserver.usb.UsbPrinterManager
 import dev.jaspreet.printserver.usb.UsbTransport
 import java.io.File
@@ -215,8 +216,12 @@ class ServerService : Service() {
         // Unlike ActivityLog's 200-entry cap, this map has none — it's fine because it's
         // scoped to one startLegacyPipeline run (one sharing session), not the process lifetime.
         val jobActivityIds = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+        // One session per pipeline run, shared by JobQueue's rendered-job writes and
+        // Raw9100Relay's raw-client writes so the two can never interleave on the real USB
+        // bulk-OUT endpoint — see LegacyPrinterSession.
+        val legacySession = LegacyPrinterSession { legacyTransportFor(usb, device) }
         val queue = JobQueue(
-            pipeline, { legacyTransportFor(usb, device) },
+            pipeline, legacySession,
             onPipelineStuck = {
                 update { ServerStatus(message = "Rendering got stuck — restart the app to recover") }
                 stopSelf()
@@ -264,7 +269,7 @@ class ServerService : Service() {
         ipp.start(bindAddr)
 
         // Raw 9100 stays available for PC-driver clients.
-        val relay = Raw9100Relay(RAW_PORT) { legacyTransportFor(usb, device) }.also { rawRelay = it }
+        val relay = Raw9100Relay(RAW_PORT, legacySession).also { rawRelay = it }
         relay.start(bindAddr)
 
         // Scan side (Spec B): open the LEDM scan interface and, if the live ScanCaps

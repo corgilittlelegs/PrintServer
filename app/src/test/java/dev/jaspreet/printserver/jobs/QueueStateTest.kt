@@ -2,6 +2,7 @@ package dev.jaspreet.printserver.jobs
 
 import dev.jaspreet.printserver.render.FakeRenderingPipeline
 import dev.jaspreet.printserver.usb.FakePrinterTransport
+import dev.jaspreet.printserver.usb.LegacyPrinterSession
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -50,7 +51,7 @@ class QueueStateTest {
                 output.writeBytes("X".toByteArray())
             }
         }
-        val q = JobQueue(blockingPipeline, { FakePrinterTransport { ByteArray(0) } }) {}
+        val q = JobQueue(blockingPipeline, LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } }) {}
         queue = q
         QueueState.attach(q)
 
@@ -71,7 +72,7 @@ class QueueStateTest {
 
     @Test
     fun `detach clears entries and future actions`() {
-        val q = JobQueue(FakeRenderingPipeline(), { FakePrinterTransport { ByteArray(0) } }) {}
+        val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } }) {}
         queue = q
         QueueState.attach(q)
         QueueState.detach()
@@ -86,7 +87,7 @@ class QueueStateTest {
         val done = CountDownLatch(1)
         val q = JobQueue(
             FakeRenderingPipeline(failWith = java.io.IOException("bad pdf")),
-            { FakePrinterTransport { ByteArray(0) } },
+            LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
         ) { done.countDown() }
         queue = q
         QueueState.attach(q)
@@ -104,7 +105,7 @@ class QueueStateTest {
         val done = CountDownLatch(1)
         val q = JobQueue(
             FakeRenderingPipeline(failWith = java.io.IOException("bad pdf")),
-            { FakePrinterTransport { ByteArray(0) } },
+            LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
         ) { done.countDown() }
         queue = q
         QueueState.attach(q)
@@ -130,7 +131,7 @@ class QueueStateTest {
                 output.writeBytes("X".toByteArray())
             }
         }
-        val q = JobQueue(blockingPipeline, { FakePrinterTransport { ByteArray(0) } }) {}
+        val q = JobQueue(blockingPipeline, LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } }) {}
         queue = q
         QueueState.attach(q)
         q.submit(pdf(), "job-a") // occupies worker

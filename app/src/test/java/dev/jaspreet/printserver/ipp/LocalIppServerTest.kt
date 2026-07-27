@@ -16,6 +16,7 @@ import dev.jaspreet.printserver.render.FakeRenderingPipeline
 import dev.jaspreet.printserver.scan.SupplyCartridge
 import dev.jaspreet.printserver.scan.SupplyStatus
 import dev.jaspreet.printserver.usb.FakePrinterTransport
+import dev.jaspreet.printserver.usb.LegacyPrinterSession
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -51,7 +52,7 @@ class LocalIppServerTest {
         capabilities: PrinterCapabilities = PrinterCapabilities.deskJet2300(URI.create("ipp://127.0.0.1:0/ipp/print")),
         supplyStatusProvider: () -> SupplyStatus? = { null },
     ): Int {
-        val q = JobQueue(pipeline, { FakePrinterTransport { ByteArray(0) } })
+        val q = JobQueue(pipeline, LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } })
         queue = q
         val dir = createTempDir()
         spoolDir = dir
@@ -299,7 +300,7 @@ class LocalIppServerTest {
         // few KB is nowhere near a real 200MB cap, so the server is
         // constructed with a tiny limit for this test via the same field
         // LocalIppServer exposes (see Step 3's maxDocumentBytes constructor param).
-        val q = JobQueue(FakeRenderingPipeline(), { FakePrinterTransport { ByteArray(0) } })
+        val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } })
         queue = q
         val caps = PrinterCapabilities.deskJet2300(URI.create("ipp://127.0.0.1:0/ipp/print"))
         val tinyLimitServer = LocalIppServer(
@@ -318,7 +319,7 @@ class LocalIppServerTest {
     @Test
     fun `too-large print-job body is rejected before a job exists, before any render, and leaves no spool file`() {
         val pipeline = FakeRenderingPipeline()
-        val q = JobQueue(pipeline, { FakePrinterTransport { ByteArray(0) } })
+        val q = JobQueue(pipeline, LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } })
         queue = q
         val dir = createTempDir()
         val caps = PrinterCapabilities.deskJet2300(URI.create("ipp://127.0.0.1:0/ipp/print"))
@@ -755,7 +756,7 @@ class LocalIppServerTest {
 
     @Test
     fun `print-job deletes the partially-spooled file when a chunked document exceeds the cap mid-stream`() {
-        val q = JobQueue(FakeRenderingPipeline(), { FakePrinterTransport { ByteArray(0) } })
+        val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } })
         queue = q
         val caps = PrinterCapabilities.deskJet2300(URI.create("ipp://127.0.0.1:0/ipp/print"))
         val dir = createTempDir()
@@ -788,7 +789,7 @@ class LocalIppServerTest {
 
     @Test
     fun `send-document truncates the reserved spool file back to empty when a chunked document exceeds the cap mid-stream`() {
-        val q = JobQueue(FakeRenderingPipeline(), { FakePrinterTransport { ByteArray(0) } })
+        val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } })
         queue = q
         val caps = PrinterCapabilities.deskJet2300(URI.create("ipp://127.0.0.1:0/ipp/print"))
         val dir = createTempDir()
