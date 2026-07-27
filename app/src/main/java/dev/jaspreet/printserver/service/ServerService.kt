@@ -69,7 +69,6 @@ class ServerService : Service() {
     private var localIppServer: LocalIppServer? = null
     private var localEsclServer: LocalEsclServer? = null
     private val pipelineActive = AtomicBoolean(false)
-    private val usbIoLock = Any()
     @Volatile private var servedDeviceId: Int? = null
 
     private val detachReceiver = object : BroadcastReceiver() {
@@ -303,10 +302,25 @@ class ServerService : Service() {
                             )
                         }
                         try {
-                            synchronized(usbIoLock) {
-                                closeLegacyTransportForScan()
-                                scanWithCandidateFallback(usb, device, output, resolution, colorMode, brightness, contrast)
+                            // Closing the legacy print transport must never race a JobQueue
+                            // or Raw9100Relay write in progress on it (see LegacyPrinterSession
+                            // class doc) — route the closure through legacySession's own lock
+                            // rather than a separate usbIoLock, so "a write is in progress" and
+                            // "the transport is being closed for a scan" can never be true at
+                            // the same time. A scan request is interactive (a user is waiting
+                            // at their scanner app), so — matching Raw9100Relay's policy of a
+                            // bounded wait rather than blocking indefinitely behind a large
+                            // print job — reuse the same DEFAULT_TIMEOUT_MS bound instead of
+                            // waiting forever.
+                            val closed = legacySession.tryWriteExclusive(
+                                "scan", LegacyPrinterSession.DEFAULT_TIMEOUT_MS,
+                            ) { closeLegacyTransportForScan() }
+                            if (closed == null) {
+                                throw java.io.IOException(
+                                    "Printer busy with an active print job — try scanning again in a moment",
+                                )
                             }
+                            scanWithCandidateFallback(usb, device, output, resolution, colorMode, brightness, contrast)
                             val outputBytes = output.length()
                             update {
                                 it.copy(
@@ -403,14 +417,23 @@ class ServerService : Service() {
         }
     }
 
+    // legacyTransportFor is only ever invoked as legacySession's transportProvider lambda
+    // (from inside writeExclusive/tryWriteExclusive), and closeLegacyTransportForScan is now
+    // likewise only invoked as a legacySession.tryWriteExclusive block (see performScan
+    // above) — so all mutation of the legacyTransport field during the pipeline's active
+    // lifetime is already serialized by legacySession's own lock. A separate usbIoLock would
+    // just be a second, redundant lock around the same field for the same call paths, so it
+    // has been removed rather than kept alongside legacySession's lock. (stopPipeline()'s own
+    // `legacyTransport?.close()` on teardown was never covered by usbIoLock either — it runs
+    // after jobQueue.shutdown() has already quiesced the writer thread — so removing usbIoLock
+    // doesn't change that path's guarantees.)
     private fun legacyTransportFor(
         usb: UsbPrinterManager,
         device: android.hardware.usb.UsbDevice,
-    ): UsbTransport = synchronized(usbIoLock) {
+    ): UsbTransport =
         legacyTransport ?: (usb.openLegacyTransport(device)
             ?: throw java.io.IOException("Printer interface no longer available"))
             .also { legacyTransport = it }
-    }
 
     private fun closeLegacyTransportForScan() {
         legacyTransport?.close()

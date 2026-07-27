@@ -117,6 +117,48 @@ class LegacyPrinterSessionTest {
         assertEquals("ok", result2)
     }
 
+    /**
+     * Task 13 regression test: ServerService's scan pipeline calls
+     * `legacySession.tryWriteExclusive("scan", ...) { closeLegacyTransportForScan() }` before
+     * opening the scan-side USB interface, specifically so a scan request can never close the
+     * shared legacy transport out from under an in-progress JobQueue/Raw9100Relay write. This
+     * proves that exact shape: a "scan" tryWriteExclusive attempt is rejected (never runs its
+     * block, i.e. never closes anything) while a print write holds the lock, and only succeeds
+     * — actually running the closure — once that write releases it.
+     */
+    @Test
+    fun `a scan transport-close request is rejected while a print write holds the lock, and succeeds after release`() {
+        val transport = RecordingTransport()
+        val session = LegacyPrinterSession { transport }
+
+        val printEntered = CountDownLatch(1)
+        val releasePrint = CountDownLatch(1)
+        val printThread = Thread {
+            session.writeExclusive("print-job") {
+                transport.currentTag = "print-job"
+                printEntered.countDown()
+                releasePrint.await(5, TimeUnit.SECONDS)
+            }
+        }
+        printThread.start()
+        assertTrue(printEntered.await(5, TimeUnit.SECONDS))
+
+        // Mirrors ServerService's closeLegacyTransportForScan() call site: it must never run
+        // while the print write is in flight.
+        val scanCloseRan = java.util.concurrent.atomic.AtomicBoolean(false)
+        val rejected = session.tryWriteExclusive("scan", timeoutMs = 200) { scanCloseRan.set(true) }
+        assertNull("scan close must be rejected (busy), not silently skipped or raced", rejected)
+        assertTrue("scan close block must never run while a print write holds the lock", !scanCloseRan.get())
+
+        releasePrint.countDown()
+        printThread.join(5_000)
+
+        // Once the print write releases the lock, the scan's transport-close proceeds safely.
+        val accepted = session.tryWriteExclusive("scan", timeoutMs = 1_000) { scanCloseRan.set(true) }
+        assertNotNull(accepted)
+        assertTrue("scan close block should run once the lock is free", scanCloseRan.get())
+    }
+
     @Test
     fun `writeExclusive waits for the lock instead of failing when it is briefly held`() {
         val transport = RecordingTransport()
