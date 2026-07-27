@@ -324,4 +324,64 @@ class JobQueueTest {
         assertEquals(listOf(PrintQuality.NORMAL), pipeline.qualities)
         assertEquals(listOf(ColorMode.COLOR), pipeline.colorModes)
     }
+
+    @Test
+    fun `spooledBytes reflects the final document size and survives spool file deletion on completion`() {
+        val printer = FakePrinterTransport { ByteArray(0) }
+        val done = CountDownLatch(1)
+        val spool = pdf()
+        val expectedSize = spool.length()
+        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), { printer }) { done.countDown() }
+        queue = q
+        val id = q.submit(spool, "test-doc")
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        val job = q.get(id)!!
+        assertEquals(JobState.COMPLETED, job.state)
+        // COMPLETED jobs have their spool file deleted — spooledBytes must not depend on it.
+        assertFalse("spool file should be deleted once the job completes", spool.exists())
+        assertEquals(expectedSize, job.spooledBytes)
+        assertTrue(expectedSize > 0)
+    }
+
+    @Test
+    fun `spooledBytes reflects the final document size for a render failure (ABORTED, file retained)`() {
+        val spool = pdf()
+        val expectedSize = spool.length()
+        val done = CountDownLatch(1)
+        val q = JobQueue(
+            FakeRenderingPipeline(failWith = IOException("bad pdf")),
+            { FakePrinterTransport { ByteArray(0) } },
+        ) { done.countDown() }
+        queue = q
+        val id = q.submit(spool, "broken-doc")
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        val job = q.get(id)!!
+        assertEquals(JobState.ABORTED, job.state)
+        assertEquals(expectedSize, job.spooledBytes)
+    }
+
+    @Test
+    fun `spooledBytes is 0 while reserved and set only once enqueue() delivers the document`() {
+        val printer = FakePrinterTransport { ByteArray(0) }
+        val done = CountDownLatch(1)
+        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), { printer }) { done.countDown() }
+        queue = q
+        val spool = File.createTempFile("job", ".pdf").also { tempFiles += it } // empty, as reserve() expects
+        val id = q.reserve(spool, "two-phase-doc")
+        assertEquals(0L, q.get(id)!!.spooledBytes)
+
+        // Simulate Send-Document writing the document body onto the reserved spool file.
+        spool.writeText("%PDF-two-phase-doc")
+        val expectedSize = spool.length()
+        assertTrue(q.enqueue(id))
+        assertEquals(expectedSize, q.get(id)!!.spooledBytes)
+
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertEquals(JobState.COMPLETED, q.get(id)!!.state)
+        assertEquals(
+            "spooledBytes must survive past the spool file's deletion on completion",
+            expectedSize,
+            q.get(id)!!.spooledBytes,
+        )
+    }
 }

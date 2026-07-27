@@ -33,7 +33,6 @@ import dev.jaspreet.printserver.ipp.TxtRecords
 import dev.jaspreet.printserver.jobs.JobQueue
 import dev.jaspreet.printserver.profile.VerifiedPrinterProfile
 import dev.jaspreet.printserver.profile.VerifiedPrinterProfiles
-import dev.jaspreet.printserver.jobs.JobState
 import dev.jaspreet.printserver.jobs.QueueState
 import dev.jaspreet.printserver.relay.ActivityMonitor
 import dev.jaspreet.printserver.relay.ChannelPool
@@ -237,9 +236,11 @@ class ServerService : Service() {
                 ActivityLog.update(activityId) { e ->
                     e.copy(
                         status = status,
-                        sizeBytes = if (job.state == JobState.PENDING ||
-                            job.state == JobState.PROCESSING
-                        ) job.spoolFile.length() else e.sizeBytes,
+                        // job.spooledBytes is captured by JobQueue at the moment the document
+                        // finishes spooling (submit()/enqueue()) and survives past spoolFile's
+                        // deletion on terminal states — safe to read unconditionally, unlike
+                        // job.spoolFile.length() which would read 0/throw once the file is gone.
+                        sizeBytes = job.spooledBytes,
                         completedAt = if (status != ActivityStatus.PRINTING) System.currentTimeMillis() else e.completedAt,
                         failureReason = if (status == ActivityStatus.FAILED) job.stateReason else e.failureReason,
                     )

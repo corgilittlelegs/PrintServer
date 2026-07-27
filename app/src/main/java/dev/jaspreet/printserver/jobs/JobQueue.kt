@@ -64,6 +64,10 @@ class JobQueue(
         colorMode: ColorMode = ColorMode.COLOR,
     ): Int {
         val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format, clientAddress, quality, colorMode)
+        // Print-Job's document is already fully streamed to spoolFile by the caller before
+        // submit() is invoked, so this is the final size — capture it now, durably, since
+        // spoolFile itself gets deleted once the job reaches a terminal state.
+        job.spooledBytes = spoolFile.length()
         jobs[job.id] = job
         pending.put(job)
         onJobStateChanged(job)
@@ -116,6 +120,10 @@ class JobQueue(
         val job = jobs[id] ?: return false
         synchronized(job) {
             if (job.state != JobState.PENDING) return false
+            // The caller (LocalIppServer.sendDocument) has just finished streaming the
+            // document into job.spoolFile — capture the final size now, durably, while the
+            // file is guaranteed to still exist and reflect the complete document.
+            job.spooledBytes = job.spoolFile.length()
             pending.put(job)
             return true
         }

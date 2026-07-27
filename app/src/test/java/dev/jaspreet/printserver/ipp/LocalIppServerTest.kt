@@ -313,6 +313,49 @@ class LocalIppServerTest {
     }
 
     @Test
+    fun `too-large print-job body is rejected before a job exists, before any render, and leaves no spool file`() {
+        val pipeline = FakeRenderingPipeline()
+        val q = JobQueue(pipeline, { FakePrinterTransport { ByteArray(0) } })
+        queue = q
+        val dir = createTempDir()
+        val caps = PrinterCapabilities.deskJet2300(URI.create("ipp://127.0.0.1:0/ipp/print"))
+        val tinyLimitServer = LocalIppServer(
+            port = 0, capabilities = caps, jobQueue = q, spoolDir = dir, maxDocumentBytes = 16,
+        )
+        tinyLimitServer.start(bindAddress = null)
+        server = tinyLimitServer
+
+        val resp = ipp(
+            tinyLimitServer.actualPort,
+            IppPacket(Operation.printJob, 9, operationGroup()),
+            "this document is definitely over sixteen bytes".toByteArray(),
+        )
+        assertEquals(Status.clientErrorRequestEntityTooLarge, resp.status)
+
+        // No jobId in the response, and no job was ever created — the body-size gate rejects
+        // the request while parsing the HTTP body, before JobQueue.submit() is ever reached.
+        assertEquals(null, resp[Tag.jobAttributes]?.getValue(Types.jobId))
+        assertEquals(
+            "no jobs should have been created for a too-large body",
+            emptyList<dev.jaspreet.printserver.jobs.PrintJob>(),
+            q.listActive(),
+        )
+
+        // pipeline.render() must never have been invoked — a too-large body is rejected
+        // at the HTTP layer, well before checkFreeSpace()/pipeline.render() would run.
+        assertTrue("render() must not run for a rejected too-large body", pipeline.rendered.isEmpty())
+
+        // No spool file (partial or otherwise) should be left behind — File.createTempFile
+        // for the job's spool is never reached because the body is rejected while it's
+        // still being read directly off the socket.
+        assertEquals(
+            "no spool file should exist for a request that never became a job",
+            0,
+            dir.listFiles()?.size ?: 0,
+        )
+    }
+
+    @Test
     fun `print-job resolves print-quality and print-color-mode from the request`() {
         val port = start()
         val request = IppPacket(
