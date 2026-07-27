@@ -63,6 +63,7 @@ class ServerService : Service() {
     private var ippServer: IppRelayServer? = null
     private var rawRelay: Raw9100Relay? = null
     private var legacyTransport: UsbTransport? = null
+    private var legacySession: LegacyPrinterSession? = null
     private var advertiser: DiscoveryAdvertiser? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var jobQueue: JobQueue? = null
@@ -218,7 +219,7 @@ class ServerService : Service() {
         // One session per pipeline run, shared by JobQueue's rendered-job writes and
         // Raw9100Relay's raw-client writes so the two can never interleave on the real USB
         // bulk-OUT endpoint — see LegacyPrinterSession.
-        val legacySession = LegacyPrinterSession { legacyTransportFor(usb, device) }
+        val legacySession = LegacyPrinterSession { legacyTransportFor(usb, device) }.also { this.legacySession = it }
         val queue = JobQueue(
             pipeline, legacySession,
             onPipelineStuck = {
@@ -418,22 +419,15 @@ class ServerService : Service() {
     }
 
     // legacyTransportFor is only ever invoked as legacySession's transportProvider lambda
-    // (from inside writeExclusive/tryWriteExclusive), and closeLegacyTransportForScan is now
-    // likewise only invoked as a legacySession.tryWriteExclusive block (see performScan
-    // above) — so all mutation of the legacyTransport field during the pipeline's active
-    // lifetime is already serialized by legacySession's own lock. A separate usbIoLock would
-    // just be a second, redundant lock around the same field for the same call paths, so it
-    // has been removed rather than kept alongside legacySession's lock. (stopPipeline()'s own
-    // `legacyTransport?.close()` on teardown was never covered by usbIoLock either, so removing
-    // usbIoLock doesn't change that path's guarantees — but note those guarantees are weak: a
-    // known, pre-existing, separate gap is that stopPipeline() closes legacyTransport directly,
-    // without going through legacySession's lock, and neither jobQueue.shutdown() (interrupt +
-    // shutdownNow(), no join()/awaitTermination()) nor localEsclServer.stop() actually waits for
-    // an in-flight write/scan to finish first — and writeExclusive deliberately uses a plain
-    // lock() rather than lockInterruptibly() so an in-flight write survives the interrupt and
-    // keeps running. So an in-flight write or scan can still race stopPipeline()'s close during
-    // service teardown. Fixing that is out of Task 13's scope (steady-state scan-vs-print
-    // contention, not teardown ordering) and is tracked as a separate follow-up.)
+    // (from inside writeExclusive/tryWriteExclusive), and closeLegacyTransportForScan is
+    // invoked both as a legacySession.tryWriteExclusive block (see performScan above) and
+    // from closeLegacyTransport() at teardown (also through legacySession's lock) — so all
+    // mutation of the legacyTransport field, in steady state and at teardown, is serialized
+    // by legacySession's own lock. A separate usbIoLock would just be a second, redundant
+    // lock around the same field for the same call paths, so it has been removed rather than
+    // kept alongside legacySession's lock. (Teardown ordering matters here too: JobQueue.shutdown
+    // and LocalEsclServer.stop both join their worker before returning, so by the time
+    // closeLegacyTransport() runs, no write or scan still holds the lock.)
     private fun legacyTransportFor(
         usb: UsbPrinterManager,
         device: android.hardware.usb.UsbDevice,
@@ -679,14 +673,38 @@ class ServerService : Service() {
         advertiser?.stopAll(); advertiser = null
         ippServer?.stop(); ippServer = null
         localIppServer?.stop(); localIppServer = null
+        // Both stop()/shutdown() below join their worker before returning, so by the time
+        // closeLegacyTransport() runs, any in-flight write or scan has already released
+        // legacySession's lock — see JobQueue.shutdown and LocalEsclServer.stop.
         localEsclServer?.stop(); localEsclServer = null
         jobQueue?.shutdown(); jobQueue = null
         QueueState.detach()
         rawRelay?.stop(); rawRelay = null
-        legacyTransport?.close(); legacyTransport = null
+        closeLegacyTransport()
         pool?.closeAll(); pool = null
         servedDeviceId = null
         pipelineActive.set(false)
+    }
+
+    /** Routes teardown's transport close through legacySession's lock — see [legacyTransportFor]
+     *  for why an unguarded close here would otherwise race an in-flight print write or scan. */
+    private fun closeLegacyTransport() {
+        val session = legacySession
+        legacySession = null
+        if (session == null) {
+            legacyTransport?.close(); legacyTransport = null
+            return
+        }
+        val closed = session.tryWriteExclusive("teardown", LegacyPrinterSession.DEFAULT_TIMEOUT_MS) {
+            closeLegacyTransportForScan()
+        }
+        if (closed == null) {
+            Log.w(
+                TAG,
+                "Teardown could not acquire the legacy printer transport lock within " +
+                    "${LegacyPrinterSession.DEFAULT_TIMEOUT_MS}ms — leaving it open for GC",
+            )
+        }
     }
 
     override fun onDestroy() {

@@ -5,6 +5,7 @@ import dev.jaspreet.printserver.scan.ScanToneSettings
 import dev.jaspreet.printserver.scan.ScannerCapabilities
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.BufferedReader
@@ -12,6 +13,7 @@ import java.io.InputStreamReader
 import java.net.Socket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class LocalEsclServerTest {
     private var server: LocalEsclServer? = null
@@ -457,5 +459,34 @@ class LocalEsclServerTest {
             "oldest job's spooled file should have been evicted from disk",
             !firstOutput.exists(),
         )
+    }
+
+    @Test
+    fun `stop waits for an in-flight scan to finish before returning`() {
+        val scanStarted = CountDownLatch(1)
+        val released = AtomicBoolean(false)
+        // Mirrors the real USB scan transport, which blocks in native I/O and does not
+        // unblock on Thread.interrupt() -- stop()'s executor.shutdownNow() interrupts the
+        // pool thread running performScan, but a real in-flight scan write should keep
+        // running rather than being abandoned mid-transfer.
+        val port = start(onScan = { _, _, _, _, output ->
+            scanStarted.countDown()
+            while (!released.get()) {
+                try { Thread.sleep(20) } catch (_: InterruptedException) { /* not abandoned mid-scan */ }
+            }
+            output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte()))
+        })
+        httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+        assertTrue("scan should have started", scanStarted.await(5, TimeUnit.SECONDS))
+
+        val stopReturned = AtomicBoolean(false)
+        val stopThread = Thread { server?.stop(); stopReturned.set(true) }
+        stopThread.start()
+        Thread.sleep(200)
+        assertFalse("stop must not return while a scan is still in flight", stopReturned.get())
+
+        released.set(true)
+        stopThread.join(5_000)
+        assertTrue("stop should have returned once the scan finished", stopReturned.get())
     }
 }

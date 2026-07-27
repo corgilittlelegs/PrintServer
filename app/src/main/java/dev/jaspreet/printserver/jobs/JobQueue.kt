@@ -284,10 +284,19 @@ class JobQueue(
         }
     }
 
-    fun shutdown() {
+    /**
+     * Stops the worker and waits (bounded by [joinTimeoutMs]) for it to actually exit before
+     * returning. [writeExclusive] deliberately doesn't respond to interrupt (see
+     * [LegacyPrinterSession]), so an in-flight write survives [worker]'s interrupt() and keeps
+     * running on the shared legacy USB transport — callers that close that transport right
+     * after shutdown() (e.g. [dev.jaspreet.printserver.service.ServerService.stopPipeline])
+     * must not race that write, which this join makes safe in the common case.
+     */
+    fun shutdown(joinTimeoutMs: Long = SHUTDOWN_JOIN_TIMEOUT_MS) {
         running = false
         worker.interrupt()
         renderExecutor.shutdownNow()
+        worker.join(joinTimeoutMs)
     }
 
     companion object {
@@ -298,6 +307,10 @@ class JobQueue(
 
         // Caps the jobs map (see evictOldTerminalJobs) — mirrors ActivityLog's 200-entry cap.
         private const val MAX_RETAINED_JOBS = 200
+
+        // Bounds how long shutdown() waits for an in-flight write to finish — long enough for
+        // a large multi-page job's final USB chunks, short enough not to hang app teardown.
+        private const val SHUTDOWN_JOIN_TIMEOUT_MS = 10_000L
 
         /** Deletes leftover spool/render files from a run that never finished cleanly. Call before construction. */
         fun cleanStaleSpool(dir: File) {

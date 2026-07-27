@@ -3,6 +3,7 @@ package dev.jaspreet.printserver.jobs
 import dev.jaspreet.printserver.render.FakeRenderingPipeline
 import dev.jaspreet.printserver.usb.FakePrinterTransport
 import dev.jaspreet.printserver.usb.LegacyPrinterSession
+import dev.jaspreet.printserver.usb.UsbTransport
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -14,6 +15,7 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class JobQueueTest {
 
@@ -533,5 +535,40 @@ class JobQueueTest {
         val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { printer })
         queue = q
         assertFalse(q.fail(999, "request-entity-too-large"))
+    }
+
+    @Test
+    fun `shutdown waits for an in-flight write to finish before returning`() {
+        val writeStarted = CountDownLatch(1)
+        val released = AtomicBoolean(false)
+        // A real USB bulk write blocks in native I/O and does not unblock on
+        // Thread.interrupt() -- unlike CountDownLatch.await(), which is interruptible and
+        // would let shutdown()'s worker.interrupt() cut the "write" short, defeating the
+        // point of this test. Poll a plain volatile instead so an interrupt landing here
+        // behaves like it would against the real transport.
+        val transport = object : UsbTransport {
+            override fun write(data: ByteArray, offset: Int, length: Int) {
+                writeStarted.countDown()
+                while (!released.get()) {
+                    try { Thread.sleep(20) } catch (_: InterruptedException) { /* not abandoned mid-write */ }
+                }
+            }
+            override fun read(buffer: ByteArray): Int = 0
+            override fun close() {}
+        }
+        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), LegacyPrinterSession { transport })
+        queue = q
+        q.submit(pdf(), "test-doc")
+        assertTrue("write should have started", writeStarted.await(5, TimeUnit.SECONDS))
+
+        val shutdownReturned = AtomicBoolean(false)
+        val shutdownThread = Thread { q.shutdown(); shutdownReturned.set(true) }
+        shutdownThread.start()
+        Thread.sleep(200)
+        assertFalse("shutdown must not return while a write is still in flight", shutdownReturned.get())
+
+        released.set(true)
+        shutdownThread.join(5_000)
+        assertTrue("shutdown should have returned once the write finished", shutdownReturned.get())
     }
 }
