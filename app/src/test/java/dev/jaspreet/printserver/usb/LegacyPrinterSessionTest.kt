@@ -144,60 +144,119 @@ class LegacyPrinterSessionTest {
         holderThread.join(5_000)
     }
 
+    /**
+     * Regression test for a bug where [LegacyPrinterSession.writeExclusive]'s old fast path
+     * called the no-arg [java.util.concurrent.locks.ReentrantLock.tryLock], which is
+     * documented to ignore fairness and always "barge" — grabbing the lock immediately if it
+     * happens to be free at that instant, even with another thread already parked waiting.
+     *
+     * A naive version of this test (hold the lock, park a raw caller behind it, start a job
+     * thread, `Thread.sleep()` for a while, *then* release the holder) does NOT catch the bug:
+     * by the time the job thread's `Thread.sleep()` has elapsed, the lock is still held, so
+     * even the old buggy `tryLock()` fails its immediate attempt and falls through to the fair
+     * `lock()` call — no barging opportunity exists because the job's very first acquisition
+     * attempt always lands while the lock is genuinely still locked. The barging bug only
+     * shows up in the narrow window between the holder's `unlock()` and the already-parked
+     * raw caller actually resuming and reacquiring — both of which happen asynchronously on
+     * separate threads, so hitting that window requires the job's attempt to start as close as
+     * possible to the release moment, not measurably before or after it.
+     *
+     * To construct that race without relying on a lucky one-shot timing coincidence, this test
+     * runs many trials. In each trial, a job thread is parked at a [java.util.concurrent.CyclicBarrier]
+     * right before calling [LegacyPrinterSession.writeExclusive] — already running and ready to
+     * go, not freshly spawned — so that releasing the barrier and releasing the holder's lock
+     * happen back-to-back with minimal gap, giving the job's acquisition attempt a real chance
+     * to race the raw caller's wake-up. This was verified empirically against the pre-fix
+     * `tryLock()` fast path (see the Task 12 fairness-fix follow-up): run against the buggy
+     * code, it does observe the job barging ahead within a bounded number of trials; run
+     * against the fixed code, barging is structurally impossible (a fair lock's `lock()` call
+     * never skips ahead of an already-queued waiter, regardless of timing) and the loop always
+     * passes.
+     */
     @Test
-    fun `a raw-9100 caller already queued is served before a job that arrives later (fairness)`() {
-        // Regression test for a bug where writeExclusive's old fast path called the no-arg
-        // ReentrantLock.tryLock(), which is documented to ignore fairness and always "barge"
-        // — letting a later-arriving job jump the queue ahead of a raw-9100 caller that was
-        // already parked waiting. The lock is constructed fair specifically so that can't
-        // happen; this proves it holds under an already-queued waiter.
-        val transport = RecordingTransport()
-        val session = LegacyPrinterSession { transport }
-        val acquireOrder = Collections.synchronizedList(mutableListOf<String>())
+    fun `a raw-9100 caller already queued is never barged by a job racing the release moment`() {
+        val maxTrials = 200
+        // Multiple simultaneous job-attempt threads per trial: each is an independent chance
+        // to land in the (narrow, sub-millisecond) window between the holder's unlock() and
+        // the already-parked raw caller's wake-and-reacquire, which is what the old buggy
+        // fast path could barge into.
+        val jobAttemptsPerTrial = 6
+        var trialsRun = 0
+        var bargeObserved: List<String>? = null
 
-        val holderEntered = CountDownLatch(1)
-        val releaseHolder = CountDownLatch(1)
-        val holderThread = Thread {
-            session.writeExclusive("initial-holder") {
-                holderEntered.countDown()
-                releaseHolder.await(5, TimeUnit.SECONDS)
+        while (trialsRun < maxTrials && bargeObserved == null) {
+            trialsRun++
+            val transport = RecordingTransport()
+            val session = LegacyPrinterSession { transport }
+            val acquireOrder = Collections.synchronizedList(mutableListOf<String>())
+
+            // holder and the K job-attempt threads all wait on the SAME barrier, released by
+            // an independent (main-thread) party — not by each other — so none of them gets
+            // a head-start from being the one that locally trips the barrier. This keeps the
+            // holder's unlock() and each job's acquisition attempt on a level footing: all are
+            // woken from a parked barrier.await() by the same release, at roughly the same time.
+            val barrier = java.util.concurrent.CyclicBarrier(2 + jobAttemptsPerTrial)
+
+            val holderEntered = CountDownLatch(1)
+            val holderThread = Thread {
+                session.writeExclusive("initial-holder") {
+                    holderEntered.countDown()
+                    barrier.await(2, TimeUnit.SECONDS)
+                }
+            }
+            holderThread.start()
+            assertTrue(holderEntered.await(2, TimeUnit.SECONDS))
+
+            // Park the raw-9100 caller behind the holder, and wait until it has genuinely
+            // enqueued on the lock (parked in the AQS wait queue, not just running its thread's
+            // startup code) before racing the job attempts against the release.
+            val rawThread = Thread {
+                session.tryWriteExclusive("raw-queued-first", timeoutMs = 2_000) {
+                    acquireOrder += "raw"
+                }
+            }
+            rawThread.start()
+            val queuedDeadline = System.currentTimeMillis() + 2_000
+            while (!session.hasQueuedThreadsForTest() && System.currentTimeMillis() < queuedDeadline) {
+                Thread.onSpinWait()
+            }
+            assertTrue("raw thread should have enqueued on the lock", session.hasQueuedThreadsForTest())
+
+            val jobDone = CountDownLatch(jobAttemptsPerTrial)
+            val jobThreads = (1..jobAttemptsPerTrial).map { idx ->
+                Thread {
+                    barrier.await(2, TimeUnit.SECONDS)
+                    session.writeExclusive("job-races-release-$idx") {
+                        acquireOrder += "job"
+                    }
+                    jobDone.countDown()
+                }
+            }
+            jobThreads.forEach { it.start() }
+            // Main thread is the final party: it does no other work first, so the K job
+            // threads and the holder are the ones actually parked waiting on the barrier when
+            // it trips, rather than main itself (which has no stake in the race).
+            barrier.await(2, TimeUnit.SECONDS)
+
+            assertTrue(jobDone.await(2, TimeUnit.SECONDS))
+            holderThread.join(2_000)
+            rawThread.join(2_000)
+
+            // A barge is any "job" entry landing before "raw" in acquisition order — or "raw"
+            // never showing up at all despite its generous 2s timeout, which would mean a job
+            // starved it out entirely.
+            val jobIndex = acquireOrder.indexOf("job")
+            val rawIndex = acquireOrder.indexOf("raw")
+            if (jobIndex >= 0 && (rawIndex < 0 || jobIndex < rawIndex)) {
+                bargeObserved = acquireOrder.toList()
             }
         }
-        holderThread.start()
-        assertTrue(holderEntered.await(5, TimeUnit.SECONDS))
 
-        // Park the raw-9100 caller behind the holder with a generous timeout, and wait until
-        // it has genuinely enqueued on the lock (not just started its thread) before letting
-        // the later job attempt to acquire — otherwise the ordering isn't actually guaranteed.
-        val rawThread = Thread {
-            session.tryWriteExclusive("raw-queued-first", timeoutMs = 10_000) {
-                acquireOrder += "raw"
-            }
-        }
-        rawThread.start()
-        val queuedDeadline = System.currentTimeMillis() + 5_000
-        while (!rawQueued(session) && System.currentTimeMillis() < queuedDeadline) {
-            Thread.sleep(5)
-        }
-        assertTrue("raw thread should have enqueued on the lock", rawQueued(session))
-
-        val jobThread = Thread {
-            session.writeExclusive("job-arrives-later") {
-                acquireOrder += "job"
-            }
-        }
-        jobThread.start()
-        // Give the job thread a moment to also reach lock.lock() and enqueue behind raw,
-        // so both are genuinely contending for the lock before it's released.
-        Thread.sleep(200)
-
-        releaseHolder.countDown()
-        holderThread.join(5_000)
-        rawThread.join(5_000)
-        jobThread.join(5_000)
-
-        assertEquals(listOf("raw", "job"), acquireOrder)
+        assertNull(
+            "job barged ahead of an already-queued raw caller on trial $trialsRun/$maxTrials " +
+                "(order: $bargeObserved) — the fair lock must never let a later attempt skip an " +
+                "already-waiting caller",
+            bargeObserved,
+        )
     }
-
-    private fun rawQueued(session: LegacyPrinterSession): Boolean = session.hasQueuedThreadsForTest()
 }
