@@ -38,6 +38,12 @@ class Raw9100Relay(
 
     private fun handle(client: Socket) {
         currentClient = client
+        // Note: soTimeout resets on every byte received, so a slow-but-still-trickling raw
+        // client can hold legacySession's lock for far longer than DEFAULT_TIMEOUT_MS — during
+        // that window, scan requests will fail with "printer busy" even though nothing is
+        // printing quickly. Acceptable for now (a print job is still making progress; the
+        // client will eventually finish or time out), but there's no independent cap on total
+        // lock-hold duration here the way there is for the (bounded-wait) scan/raw side.
         client.soTimeout = 60_000
         // Acquired once for the whole connection (not per chunk): a raw-9100 session is one
         // logical print stream from the printer's point of view, so once it wins the lock it

@@ -13,8 +13,7 @@ package dev.jaspreet.printserver.profile
  * [vendorId]/[productId] are optional supplementary signals: when present on both the profile
  * and the runtime `UsbDevice`, a match adds confidence, but their absence is not disqualifying —
  * manufacturer/model/command matching is the primary gate.
- */
-/**
+ *
  * The Tier 2 (native rendering) capability fields below describe what this profile's
  * *rendering pipeline* can actually produce for this printer, not the printer's full spec
  * sheet — [PrinterCapabilities] (in the `ipp` package) advertises exactly these values over
