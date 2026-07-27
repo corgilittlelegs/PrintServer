@@ -40,7 +40,20 @@ class LegacyPrinterSession(
      * where blocking briefly behind another writer is acceptable (see class doc).
      */
     fun <T> writeExclusive(ownerLabel: String, block: (UsbTransport) -> T): T {
-        lock.lockInterruptibly0(ownerLabel)
+        // hasQueuedThreads() is a read-only check — unlike tryLock(), it never itself
+        // attempts to acquire the lock, so it can't barge ahead of an already-queued
+        // waiter. (The no-arg ReentrantLock.tryLock() is documented to ignore fairness
+        // and always barge; using it here as a "fast path" would let a stream of
+        // back-to-back jobs repeatedly cut in front of an already-waiting raw-9100
+        // client, defeating the fair lock below.)
+        if (lock.hasQueuedThreads()) {
+            Log.i(TAG, "$ownerLabel: legacy printer transport busy — waiting for it to free up")
+        }
+        // Plain lock() (not lockInterruptibly()): a job's write must not be abandoned
+        // mid-stream by an interrupt — JobQueue.shutdown() interrupts the worker thread,
+        // but a write already in flight should still finish rather than leave the
+        // transport in a half-written state.
+        lock.lock()
         try {
             return block(transportProvider())
         } finally {
@@ -77,16 +90,11 @@ class LegacyPrinterSession(
         }
     }
 
-    private fun ReentrantLock.lockInterruptibly0(ownerLabel: String) {
-        // Plain lock() (not lockInterruptibly): a job's write must not be abandoned
-        // mid-stream by an interrupt — JobQueue.shutdown() interrupts the worker thread,
-        // but a write already in flight should still finish rather than leave the
-        // transport in a half-written state.
-        if (!tryLock()) {
-            Log.i(TAG, "$ownerLabel: legacy printer transport busy — waiting for it to free up")
-            lock()
-        }
-    }
+    /** Read-only, non-acquiring peek at whether another thread is already queued for the
+     *  lock. Exposed at internal visibility purely so tests can synchronize on "the other
+     *  caller has genuinely enqueued" before asserting fairness ordering — production code
+     *  has no need for it. */
+    internal fun hasQueuedThreadsForTest(): Boolean = lock.hasQueuedThreads()
 
     companion object {
         private const val TAG = "LegacyPrinterSession"

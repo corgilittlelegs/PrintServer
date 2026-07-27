@@ -143,4 +143,61 @@ class LegacyPrinterSessionTest {
 
         holderThread.join(5_000)
     }
+
+    @Test
+    fun `a raw-9100 caller already queued is served before a job that arrives later (fairness)`() {
+        // Regression test for a bug where writeExclusive's old fast path called the no-arg
+        // ReentrantLock.tryLock(), which is documented to ignore fairness and always "barge"
+        // — letting a later-arriving job jump the queue ahead of a raw-9100 caller that was
+        // already parked waiting. The lock is constructed fair specifically so that can't
+        // happen; this proves it holds under an already-queued waiter.
+        val transport = RecordingTransport()
+        val session = LegacyPrinterSession { transport }
+        val acquireOrder = Collections.synchronizedList(mutableListOf<String>())
+
+        val holderEntered = CountDownLatch(1)
+        val releaseHolder = CountDownLatch(1)
+        val holderThread = Thread {
+            session.writeExclusive("initial-holder") {
+                holderEntered.countDown()
+                releaseHolder.await(5, TimeUnit.SECONDS)
+            }
+        }
+        holderThread.start()
+        assertTrue(holderEntered.await(5, TimeUnit.SECONDS))
+
+        // Park the raw-9100 caller behind the holder with a generous timeout, and wait until
+        // it has genuinely enqueued on the lock (not just started its thread) before letting
+        // the later job attempt to acquire — otherwise the ordering isn't actually guaranteed.
+        val rawThread = Thread {
+            session.tryWriteExclusive("raw-queued-first", timeoutMs = 10_000) {
+                acquireOrder += "raw"
+            }
+        }
+        rawThread.start()
+        val queuedDeadline = System.currentTimeMillis() + 5_000
+        while (!rawQueued(session) && System.currentTimeMillis() < queuedDeadline) {
+            Thread.sleep(5)
+        }
+        assertTrue("raw thread should have enqueued on the lock", rawQueued(session))
+
+        val jobThread = Thread {
+            session.writeExclusive("job-arrives-later") {
+                acquireOrder += "job"
+            }
+        }
+        jobThread.start()
+        // Give the job thread a moment to also reach lock.lock() and enqueue behind raw,
+        // so both are genuinely contending for the lock before it's released.
+        Thread.sleep(200)
+
+        releaseHolder.countDown()
+        holderThread.join(5_000)
+        rawThread.join(5_000)
+        jobThread.join(5_000)
+
+        assertEquals(listOf("raw", "job"), acquireOrder)
+    }
+
+    private fun rawQueued(session: LegacyPrinterSession): Boolean = session.hasQueuedThreadsForTest()
 }
