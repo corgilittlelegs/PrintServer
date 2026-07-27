@@ -9,8 +9,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.File
-import java.lang.reflect.Method
 import java.net.URI
 
 class PrinterCapabilitiesTest {
@@ -97,8 +95,11 @@ class PrinterCapabilitiesTest {
 
         // Ground truth: NativeRenderingPipeline.dpiFor(quality) for every PrintQuality reachable
         // from IPP (DRAFT/NORMAL/HIGH — Photo/1200dpi is intentionally unreachable per
-        // PrintOptions.kt, so it has no enum value and can't leak into this set).
-        val reachableDpis = PrintQuality.entries.map { quality -> dpiForViaReflection(quality) }.toSet()
+        // PrintOptions.kt, so it has no enum value and can't leak into this set). Calling the
+        // real (internal, non-private) function directly rather than hand-copying the mapping
+        // or reflecting into a private method means this test fails loudly on a real signature
+        // change instead of drifting silently or breaking with an opaque reflection exception.
+        val reachableDpis = PrintQuality.entries.map { quality -> NativeRenderingPipeline.dpiFor(quality) }.toSet()
 
         assertEquals(reachableDpis, advertisedDpis)
         assertFalse("must never advertise the unreachable 1200dpi Photo mode", advertisedDpis.contains(1200))
@@ -123,22 +124,5 @@ class PrinterCapabilitiesTest {
     fun `URF PQ token lists every supported print-quality code in one token`() {
         val info = caps.toPrinterInfo()
         assertTrue("expected PQ3-4-5 in URF tokens, got ${info.urf}", info.urf.contains("PQ3-4-5"))
-    }
-
-    /**
-     * NativeRenderingPipeline.dpiFor is private; reflection keeps this test coupled to the
-     * pipeline's *real* behavior (so it fails if that mapping ever changes) instead of
-     * duplicating the DRAFT->300/NORMAL,HIGH->600 logic by hand and risking the two silently
-     * drifting apart. Constructing the pipeline itself is safe under isReturnDefaultValues=true
-     * (app/build.gradle.kts) even though it references android.graphics.BitmapFactory, since
-     * that class is only touched inside render(), never in the constructor.
-     */
-    private fun dpiForViaReflection(quality: PrintQuality): Int {
-        val pipelineClass = NativeRenderingPipeline::class.java
-        val method: Method = pipelineClass.getDeclaredMethod("dpiFor", PrintQuality::class.java)
-        method.isAccessible = true
-        val instance = pipelineClass.getDeclaredConstructor(File::class.java, String::class.java)
-            .newInstance(File("/tmp"), "/tmp/unused.ppd")
-        return method.invoke(instance, quality) as Int
     }
 }

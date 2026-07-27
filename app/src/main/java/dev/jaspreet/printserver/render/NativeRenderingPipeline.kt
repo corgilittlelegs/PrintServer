@@ -21,6 +21,17 @@ class NativeRenderingPipeline(
         // Bounds a decoded JPEG's memory footprint (ARGB_8888 bitmap + RGB copies below);
         // 50 megapixels is well beyond any realistic printed page at this pipeline's max dpi.
         private const val MAX_JPEG_PIXELS = 50_000_000L
+
+        // FastDraft/Normal/Best all live in the bundled PPD; Best differs from Normal only
+        // via the OutputMode option string below, not resolution — both render at 600dpi.
+        // Photo(1200dpi) has no reachable IPP print-quality mapping (see PrintOptions.kt).
+        //
+        // internal (not private) and on the companion object so this is the single source of
+        // truth other code can reference directly instead of duplicating the mapping by hand —
+        // e.g. PrinterCapabilitiesTest asserts the IPP-advertised resolutions against this exact
+        // function rather than reflecting into a private method or hand-copying the DRAFT=300/
+        // NORMAL,HIGH=600 rule (which could then silently drift from the real renderer).
+        internal fun dpiFor(quality: PrintQuality): Int = if (quality == PrintQuality.DRAFT) 300 else 600
     }
 
     override fun render(document: File, output: File, format: String, quality: PrintQuality, colorMode: ColorMode) {
@@ -32,11 +43,6 @@ class NativeRenderingPipeline(
             else -> renderPdf(document, output, dpi, options)
         }
     }
-
-    // FastDraft/Normal/Best all live in the bundled PPD; Best differs from Normal only
-    // via the OutputMode option string below, not resolution — both render at 600dpi.
-    // Photo(1200dpi) has no reachable IPP print-quality mapping (see PrintOptions.kt).
-    private fun dpiFor(quality: PrintQuality): Int = if (quality == PrintQuality.DRAFT) 300 else 600
 
     private fun hpcupsOptions(quality: PrintQuality, colorMode: ColorMode): String {
         val outputMode = when (quality) {
