@@ -2,6 +2,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <android/log.h>
@@ -15,6 +16,22 @@ extern int hpcups_main(int argc, char *argv[]);
 
 #define LOG_TAG "hpcupsjni"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+/*
+ * Stable negative setup-failure codes returned by encode()/encodeRaster().
+ * hpcups itself only ever returns 0 (success) or a small positive exit
+ * code, so these negative values can never collide with a real hpcups
+ * result. Kotlin callers (Task 10) map these to user-facing messages —
+ * keep the numbering stable once assigned; do not renumber existing
+ * constants, only add new ones.
+ */
+#define HPCUPS_ERR_GENERIC        (-1)  // fallback / unexpected setup failure
+#define HPCUPS_ERR_STRING_ALLOC   (-2)  // GetStringUTFChars returned NULL (OOM)
+#define HPCUPS_ERR_ARRAY_ALLOC    (-3)  // GetByteArrayElements returned NULL (OOM)
+#define HPCUPS_ERR_OPEN_OUTPUT    (-4)  // open() of the output file failed
+#define HPCUPS_ERR_OPEN_INPUT     (-5)  // open() of the input file failed
+#define HPCUPS_ERR_PIPE           (-6)  // pipe() failed
+#define HPCUPS_ERR_THREAD_CREATE  (-7)  // pthread_create() failed
 
 struct RasterFeed {
     int fd;                 // write end of the pipe
@@ -71,7 +88,8 @@ static void *feed_raster(void *arg) {
 
 /*
  * Encodes one RGB page to PCL3-GUI via hpcups.
- * Returns 0 on success, nonzero hpcups exit code / -1 on setup failure.
+ * Returns 0 on success, a positive hpcups exit code on hpcups failure, or
+ * one of the HPCUPS_ERR_* negative constants above on setup failure.
  * NOT thread-safe (globals + hpcups statics): callers must serialize.
  */
 extern "C" JNIEXPORT jint JNICALL
@@ -83,20 +101,50 @@ Java_dev_jaspreet_printserver_render_HpcupsNative_encode(
     const char *ppd = env->GetStringUTFChars(jppdPath, NULL);
     const char *outPath = env->GetStringUTFChars(joutPath, NULL);
     const char *options = env->GetStringUTFChars(joptions, NULL);
-    jbyte *rgb = env->GetByteArrayElements(jrgb, NULL);
-    int result = -1;
+    jbyte *rgb = NULL;
+    int result = HPCUPS_ERR_GENERIC;
+
+    if (ppd == NULL || outPath == NULL || options == NULL) {
+        LOGE("GetStringUTFChars returned NULL (OOM) while acquiring encode() args");
+        if (ppd != NULL) env->ReleaseStringUTFChars(jppdPath, ppd);
+        if (outPath != NULL) env->ReleaseStringUTFChars(joutPath, outPath);
+        if (options != NULL) env->ReleaseStringUTFChars(joptions, options);
+        return HPCUPS_ERR_STRING_ALLOC;
+    }
+
+    rgb = env->GetByteArrayElements(jrgb, NULL);
+    if (rgb == NULL) {
+        LOGE("GetByteArrayElements returned NULL (OOM) for encode() rgb buffer");
+        env->ReleaseStringUTFChars(jppdPath, ppd);
+        env->ReleaseStringUTFChars(joutPath, outPath);
+        env->ReleaseStringUTFChars(joptions, options);
+        return HPCUPS_ERR_ARRAY_ALLOC;
+    }
 
     int pipefd[2];
     int outFd = open(outPath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (outFd >= 0 && pipe(pipefd) == 0) {
+    if (outFd < 0) {
+        LOGE("open output file failed: path=%s errno=%d (%s)", outPath, errno, strerror(errno));
+        result = HPCUPS_ERR_OPEN_OUTPUT;
+    } else if (pipe(pipefd) != 0) {
+        LOGE("pipe() failed: errno=%d (%s)", errno, strerror(errno));
+        result = HPCUPS_ERR_PIPE;
+    } else {
         RasterFeed feed = { pipefd[1], (const unsigned char *)rgb,
                             (unsigned)width, (unsigned)height, (unsigned)dpi };
         pthread_t writer;
-        pthread_create(&writer, NULL, feed_raster, &feed);
-        result = run_hpcups(pipefd[0], outFd, ppd, options);
-
-        pthread_join(writer, NULL);
-        close(pipefd[0]);
+        int rc = pthread_create(&writer, NULL, feed_raster, &feed);
+        if (rc != 0) {
+            LOGE("pthread_create() failed: rc=%d (%s)", rc, strerror(rc));
+            close(pipefd[0]);
+            close(pipefd[1]);
+            result = HPCUPS_ERR_THREAD_CREATE;
+        } else {
+            result = run_hpcups(pipefd[0], outFd, ppd, options);
+            pthread_join(writer, NULL);
+            close(pipefd[0]);
+            // pipefd[1] is closed by feed_raster() itself once it's done writing.
+        }
     }
     if (outFd >= 0) close(outFd);
 
@@ -111,6 +159,8 @@ Java_dev_jaspreet_printserver_render_HpcupsNative_encode(
  * Encodes a client-supplied PWG/CUPS/Apple raster file to PCL3-GUI via hpcups.
  * hpcups reads through CUPS' raster APIs, so CUPS_RASTER_READ handles the
  * supported raster stream variants and page count internally.
+ * Returns 0 on success, a positive hpcups exit code on hpcups failure, or
+ * one of the HPCUPS_ERR_* negative constants above on setup failure.
  */
 extern "C" JNIEXPORT jint JNICALL
 Java_dev_jaspreet_printserver_render_HpcupsNative_encodeRaster(
@@ -121,18 +171,32 @@ Java_dev_jaspreet_printserver_render_HpcupsNative_encodeRaster(
     const char *ppd = env->GetStringUTFChars(jppdPath, NULL);
     const char *outPath = env->GetStringUTFChars(joutPath, NULL);
     const char *options = env->GetStringUTFChars(joptions, NULL);
-    int result = -1;
 
-    int inputFd = open(inputPath, O_RDONLY);
-    int outFd = open(outPath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (inputFd >= 0 && outFd >= 0) {
-        result = run_hpcups(inputFd, outFd, ppd, options);
-    } else {
-        LOGE("open failed for raster input=%s output=%s", inputPath, outPath);
+    if (inputPath == NULL || ppd == NULL || outPath == NULL || options == NULL) {
+        LOGE("GetStringUTFChars returned NULL (OOM) while acquiring encodeRaster() args");
+        if (inputPath != NULL) env->ReleaseStringUTFChars(jinputPath, inputPath);
+        if (ppd != NULL) env->ReleaseStringUTFChars(jppdPath, ppd);
+        if (outPath != NULL) env->ReleaseStringUTFChars(joutPath, outPath);
+        if (options != NULL) env->ReleaseStringUTFChars(joptions, options);
+        return HPCUPS_ERR_STRING_ALLOC;
     }
 
-    if (inputFd >= 0) close(inputFd);
-    if (outFd >= 0) close(outFd);
+    int result = HPCUPS_ERR_GENERIC;
+    int inputFd = open(inputPath, O_RDONLY);
+    if (inputFd < 0) {
+        LOGE("open input raster failed: path=%s errno=%d (%s)", inputPath, errno, strerror(errno));
+        result = HPCUPS_ERR_OPEN_INPUT;
+    } else {
+        int outFd = open(outPath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (outFd < 0) {
+            LOGE("open output file failed: path=%s errno=%d (%s)", outPath, errno, strerror(errno));
+            result = HPCUPS_ERR_OPEN_OUTPUT;
+        } else {
+            result = run_hpcups(inputFd, outFd, ppd, options);
+            close(outFd);
+        }
+        close(inputFd);
+    }
 
     env->ReleaseStringUTFChars(jinputPath, inputPath);
     env->ReleaseStringUTFChars(jppdPath, ppd);
