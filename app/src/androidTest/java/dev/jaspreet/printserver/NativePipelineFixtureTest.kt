@@ -80,13 +80,19 @@ class NativePipelineFixtureTest {
         val twoPageOut = File(ctx.cacheDir, "fixture-twopage.pcl")
         val failureDir = File(ctx.cacheDir, "fixture-failure")
 
-        try {
-            testCtx.assets.open("smoke.pdf").use { input -> onePagePdf.outputStream().use { input.copyTo(it) } }
-            testCtx.assets.open("multipage-smoke.pdf").use { input -> twoPagePdf.outputStream().use { input.copyTo(it) } }
+        testCtx.assets.open("smoke.pdf").use { input -> onePagePdf.outputStream().use { input.copyTo(it) } }
+        testCtx.assets.open("multipage-smoke.pdf").use { input -> twoPagePdf.outputStream().use { input.copyTo(it) } }
 
+        try {
             pipeline.render(onePagePdf, onePageOut, "application/pdf", PrintQuality.NORMAL, ColorMode.COLOR)
             pipeline.render(twoPagePdf, twoPageOut, "application/pdf", PrintQuality.NORMAL, ColorMode.COLOR)
 
+            assertTrue("one-page PCL output should be non-trivial", onePageOut.length() > 1024)
+            assertEquals(
+                "one-page PCL output should start with ESC",
+                0x1B,
+                onePageOut.inputStream().use { it.read() },
+            )
             assertTrue("two-page PCL output should be non-trivial", twoPageOut.length() > 1024)
             assertEquals(
                 "two-page PCL output should start with ESC",
