@@ -110,9 +110,7 @@ class LocalIppServer(
 
         return when (request.code) {
             Operation.getPrinterAttributes.code -> getPrinterAttributes(request)
-            Operation.validateJob.code -> IppPacket(
-                Status.successfulOk, request.requestId, operationGroup(),
-            )
+            Operation.validateJob.code -> validateJob(request)
             Operation.printJob.code -> printJob(request, document, clientAddress)
             Operation.createJob.code -> createJob(request, clientAddress)
             Operation.sendDocument.code -> sendDocument(request, document)
@@ -139,6 +137,14 @@ class LocalIppServer(
         return IppPacket(Status.successfulOk, request.requestId, operationGroup(), filtered)
     }
 
+    private fun validateJob(request: IppPacket): IppPacket {
+        val format = documentFormat(request)
+        if (!isFormatSupported(format)) {
+            return documentFormatNotSupported(request.requestId, format)
+        }
+        return IppPacket(Status.successfulOk, request.requestId, operationGroup())
+    }
+
     private fun printJob(request: IppPacket, document: ByteArray, clientAddress: String?): IppPacket {
         if (document.isEmpty()) {
             return errorResponse(request.requestId, Status.clientErrorBadRequest)
@@ -148,6 +154,9 @@ class LocalIppServer(
             return errorResponse(request.requestId, Status.clientErrorBadRequest)
         }
         val format = documentFormat(request)
+        if (!isFormatSupported(format)) {
+            return documentFormatNotSupported(request.requestId, format)
+        }
         spoolDir.mkdirs()
         val spool = File.createTempFile("job", spoolExtension(format), spoolDir)
         spool.writeBytes(document)
@@ -176,6 +185,9 @@ class LocalIppServer(
             return errorResponse(request.requestId, Status.clientErrorBadRequest)
         }
         val format = documentFormat(request)
+        if (!isFormatSupported(format)) {
+            return documentFormatNotSupported(request.requestId, format)
+        }
         spoolDir.mkdirs()
         val spool = File.createTempFile("job", spoolExtension(format), spoolDir)
         val name = request[Tag.operationAttributes]?.getValue(Types.jobName)?.value ?: "untitled"
@@ -298,6 +310,17 @@ class LocalIppServer(
 
     private fun documentFormat(request: IppPacket): String =
         request[Tag.operationAttributes]?.getValue(Types.documentFormat) ?: "application/pdf"
+
+    /** Authoritative check against the profile-declared format list — see
+     *  [PrinterCapabilities.formats]. Centralized here so Validate-Job/Print-Job/Create-Job
+     *  share one rule; Send-Document deliberately doesn't call this — its job's format was
+     *  already validated and fixed at Print-Job/Create-Job time. */
+    private fun isFormatSupported(format: String): Boolean = format in capabilities.formats
+
+    private fun documentFormatNotSupported(requestId: Int, format: String): IppPacket = errorResponse(
+        requestId, Status.clientErrorDocumentFormatNotSupported,
+        groupOf(Tag.operationAttributes, Types.statusMessage.of("document-format $format is not supported")),
+    )
 
     /** job-template attributes can legally arrive in either the job-attributes group
      *  (per RFC 8011) or the operation-attributes group — real clients aren't fully

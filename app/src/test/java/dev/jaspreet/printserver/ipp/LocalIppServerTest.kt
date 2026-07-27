@@ -30,6 +30,7 @@ class LocalIppServerTest {
 
     private var server: LocalIppServer? = null
     private var queue: JobQueue? = null
+    private var spoolDir: File? = null
 
     @After
     fun tearDown() {
@@ -44,11 +45,13 @@ class LocalIppServerTest {
     ): Int {
         val q = JobQueue(pipeline, { FakePrinterTransport { ByteArray(0) } })
         queue = q
+        val dir = createTempDir()
+        spoolDir = dir
         val s = LocalIppServer(
             port = 0,
             capabilities = capabilities,
             jobQueue = q,
-            spoolDir = createTempDir(),
+            spoolDir = dir,
             supplyStatusProvider = supplyStatusProvider,
         )
         s.start(bindAddress = null)
@@ -344,6 +347,118 @@ class LocalIppServerTest {
         val resp = ipp(port, request, "%PDF".toByteArray())
         val jobId = resp[Tag.jobAttributes]!!.getValue(Types.jobId)!!
         assertEquals(dev.jaspreet.printserver.jobs.ColorMode.COLOR, queue!!.get(jobId)!!.colorMode)
+    }
+
+    @Test
+    fun `validate-job rejects unsupported document-format`() {
+        val port = start()
+        val request = IppPacket(
+            Operation.validateJob, 40,
+            groupOf(
+                Tag.operationAttributes,
+                Types.attributesCharset.of("utf-8"),
+                Types.attributesNaturalLanguage.of("en"),
+                Types.printerUri.of(URI.create("ipp://127.0.0.1/ipp/print")),
+                Types.documentFormat.of("application/postscript"),
+            ),
+        )
+        val resp = ipp(port, request)
+        assertEquals(Status.clientErrorDocumentFormatNotSupported, resp.status)
+    }
+
+    @Test
+    fun `validate-job accepts supported document-format`() {
+        val port = start()
+        val request = IppPacket(
+            Operation.validateJob, 41,
+            groupOf(
+                Tag.operationAttributes,
+                Types.attributesCharset.of("utf-8"),
+                Types.attributesNaturalLanguage.of("en"),
+                Types.printerUri.of(URI.create("ipp://127.0.0.1/ipp/print")),
+                Types.documentFormat.of("application/pdf"),
+            ),
+        )
+        val resp = ipp(port, request)
+        assertEquals(Status.successfulOk, resp.status)
+    }
+
+    @Test
+    fun `print-job rejects unsupported document-format without touching the filesystem`() {
+        val port = start()
+        val request = IppPacket(
+            Operation.printJob, 42,
+            groupOf(
+                Tag.operationAttributes,
+                Types.attributesCharset.of("utf-8"),
+                Types.attributesNaturalLanguage.of("en"),
+                Types.printerUri.of(URI.create("ipp://127.0.0.1/ipp/print")),
+                Types.documentFormat.of("application/vnd.hp-pcl"),
+            ),
+        )
+        val resp = ipp(port, request, "some bytes".toByteArray())
+        assertEquals(Status.clientErrorDocumentFormatNotSupported, resp.status)
+        assertEquals(null, resp[Tag.jobAttributes]?.getValue(Types.jobId))
+        // Rejection must happen before File.createTempFile — no spool file should
+        // ever be written for a format the printer can't handle.
+        val filesInSpoolDir: List<File> = spoolDir!!.listFiles()?.toList() ?: emptyList()
+        assertEquals(
+            "no spool file should be created for a rejected format",
+            0,
+            filesInSpoolDir.size,
+        )
+    }
+
+    @Test
+    fun `create-job rejects unsupported document-format`() {
+        val port = start()
+        val request = IppPacket(
+            Operation.createJob, 43,
+            groupOf(
+                Tag.operationAttributes,
+                Types.attributesCharset.of("utf-8"),
+                Types.attributesNaturalLanguage.of("en"),
+                Types.printerUri.of(URI.create("ipp://127.0.0.1/ipp/print")),
+                Types.documentFormat.of("image/urf"),
+            ),
+        )
+        val resp = ipp(port, request)
+        assertEquals(Status.clientErrorDocumentFormatNotSupported, resp.status)
+        assertEquals(null, resp[Tag.jobAttributes]?.getValue(Types.jobId))
+    }
+
+    @Test
+    fun `print-job rejects application-octet-stream document-format`() {
+        val port = start()
+        val request = IppPacket(
+            Operation.printJob, 44,
+            groupOf(
+                Tag.operationAttributes,
+                Types.attributesCharset.of("utf-8"),
+                Types.attributesNaturalLanguage.of("en"),
+                Types.printerUri.of(URI.create("ipp://127.0.0.1/ipp/print")),
+                Types.documentFormat.of("application/octet-stream"),
+            ),
+        )
+        val resp = ipp(port, request, "some bytes".toByteArray())
+        assertEquals(Status.clientErrorDocumentFormatNotSupported, resp.status)
+    }
+
+    @Test
+    fun `validate-job rejects an unknown mime type`() {
+        val port = start()
+        val request = IppPacket(
+            Operation.validateJob, 45,
+            groupOf(
+                Tag.operationAttributes,
+                Types.attributesCharset.of("utf-8"),
+                Types.attributesNaturalLanguage.of("en"),
+                Types.printerUri.of(URI.create("ipp://127.0.0.1/ipp/print")),
+                Types.documentFormat.of("application/x-totally-made-up"),
+            ),
+        )
+        val resp = ipp(port, request)
+        assertEquals(Status.clientErrorDocumentFormatNotSupported, resp.status)
     }
 
     @Test
