@@ -209,7 +209,7 @@ class ServerService : Service() {
 
         // Tier-2: the app itself is the IPP printer; rendering happens on-device.
         val ppd = PpdAsset.extract(this)
-        val pipeline = NativeRenderingPipeline(cacheDir, ppd.absolutePath)
+        val pipeline = NativeRenderingPipeline(cacheDir, ppd.absolutePath, profileId = profile.id)
         val spoolDir = File(cacheDir, "spool")
         JobQueue.cleanStaleSpool(spoolDir.apply { mkdirs() }) // drop leftovers from a run killed mid-job
         // Unlike ActivityLog's 200-entry cap, this map has none — it's fine because it's

@@ -1,6 +1,7 @@
 package dev.jaspreet.printserver.render
 
 import android.graphics.BitmapFactory
+import android.util.Log
 import dev.jaspreet.printserver.jobs.ColorMode
 import dev.jaspreet.printserver.jobs.PrintQuality
 import java.io.File
@@ -15,9 +16,15 @@ import java.io.IOException
 class NativeRenderingPipeline(
     private val workDir: File,
     private val ppdPath: String,
+    /** Verified profile this pipeline was built from, if any — included in render-failure
+     *  logs only (not part of the render path itself). Optional/defaulted so existing
+     *  callers/tests that don't have a profile in scope don't need to change. */
+    private val profileId: String? = null,
 ) : RenderingPipeline {
 
     companion object {
+        private const val TAG = "NativeRenderingPipeline"
+
         // Bounds a decoded JPEG's memory footprint (ARGB_8888 bitmap + RGB copies below);
         // 50 megapixels is well beyond any realistic printed page at this pipeline's max dpi.
         private const val MAX_JPEG_PIXELS = 50_000_000L
@@ -38,9 +45,9 @@ class NativeRenderingPipeline(
         val dpi = dpiFor(quality)
         val options = hpcupsOptions(quality, colorMode)
         when (format) {
-            "image/jpeg" -> renderJpeg(document, output, dpi, options)
-            "image/pwg-raster" -> renderPwgRaster(document, output, options)
-            else -> renderPdf(document, output, dpi, options)
+            "image/jpeg" -> renderJpeg(document, output, dpi, options, format, quality, colorMode)
+            "image/pwg-raster" -> renderPwgRaster(document, output, options, format, quality, colorMode)
+            else -> renderPdf(document, output, dpi, options, format, quality, colorMode)
         }
     }
 
@@ -54,12 +61,18 @@ class NativeRenderingPipeline(
         return "ColorModel=$colorModel OutputMode=$outputMode"
     }
 
-    private fun renderPwgRaster(raster: File, output: File, options: String) {
+    private fun renderPwgRaster(
+        raster: File, output: File, options: String,
+        format: String, quality: PrintQuality, colorMode: ColorMode,
+    ) {
         val code = HpcupsNative.encodeRaster(raster.absolutePath, ppdPath, output.absolutePath, options)
-        if (code != 0) throw IOException("hpcups failed with code $code for PWG Raster")
+        checkResult(code, format, quality, colorMode)
     }
 
-    private fun renderJpeg(jpeg: File, output: File, dpi: Int, options: String) {
+    private fun renderJpeg(
+        jpeg: File, output: File, dpi: Int, options: String,
+        format: String, quality: PrintQuality, colorMode: ColorMode,
+    ) {
         // Check the declared dimensions before decoding actual pixels — a tiny file can
         // claim an enormous width/height (decompression bomb) and blow up memory on the
         // full decode below. inJustDecodeBounds only parses the header, no pixel buffer.
@@ -86,13 +99,16 @@ class NativeRenderingPipeline(
                 rgb[i++] = (pixel and 0xFF).toByte()
             }
             val code = HpcupsNative.encode(rgb, width, height, dpi, ppdPath, output.absolutePath, options)
-            if (code != 0) throw IOException("hpcups failed with code $code")
+            checkResult(code, format, quality, colorMode)
         } finally {
             bitmap.recycle()
         }
     }
 
-    private fun renderPdf(pdf: File, output: File, dpi: Int, options: String) {
+    private fun renderPdf(
+        pdf: File, output: File, dpi: Int, options: String,
+        format: String, quality: PrintQuality, colorMode: ColorMode,
+    ) {
         val pageDir = File(workDir, "pages-${System.nanoTime()}").apply { mkdirs() }
         try {
             val pattern = File(pageDir, "page-%03d.ppm")
@@ -108,12 +124,43 @@ class NativeRenderingPipeline(
                     val code = HpcupsNative.encode(
                         img.rgb, img.width, img.height, dpi, ppdPath, pageOut.absolutePath, options,
                     )
-                    if (code != 0) throw IOException("hpcups failed with code $code on ${page.name}")
+                    checkResult(code, format, quality, colorMode, page = page.name)
                     pageOut.inputStream().use { it.copyTo(out) }
                 }
             }
         } finally {
             pageDir.deleteRecursively()
         }
+    }
+
+    /**
+     * Maps a raw hpcups return code to [HpcupsResult] and throws [IOException] on anything
+     * but success. Logs the profile id (if known), format, quality, color mode, and (for
+     * multi-page PDFs) which page failed, so a failure is diagnosable from Logcat alone —
+     * `JobQueue.process()` catches this as a generic `Exception` and only records a coarse
+     * `document-format-error` job-state reason, so this message/log line is the actual detail.
+     */
+    private fun checkResult(
+        code: Int, format: String, quality: PrintQuality, colorMode: ColorMode, page: String? = null,
+    ) {
+        val result = HpcupsResult.fromCode(code)
+        if (result is HpcupsResult.Success) return
+
+        val context = buildString {
+            append("profile=").append(profileId ?: "unknown")
+            append(" format=").append(format)
+            append(" quality=").append(quality)
+            append(" colorMode=").append(colorMode)
+            if (page != null) append(" page=").append(page)
+        }
+        val message = when (result) {
+            is HpcupsResult.SetupFailure ->
+                "hpcups setup failed (code ${result.code}: ${result.reason}) [$context]"
+            is HpcupsResult.RenderFailure ->
+                "hpcups render failed (exit code ${result.code}) [$context]"
+            HpcupsResult.Success -> return // unreachable, satisfies exhaustiveness
+        }
+        Log.e(TAG, message)
+        throw IOException(message)
     }
 }
