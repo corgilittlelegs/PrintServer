@@ -45,6 +45,9 @@ data class ServerStatus(
     val scanProgress: ScanProgress? = null,
     val supplyStatus: SupplyStatus? = null,
     val supplyFailureReason: String? = null,
+    val profileId: String? = null,
+    val profileName: String? = null,
+    val unsupportedDevice: Boolean = false,
 )
 
 object ServerState {

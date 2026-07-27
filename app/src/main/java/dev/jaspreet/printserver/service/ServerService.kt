@@ -31,6 +31,7 @@ import dev.jaspreet.printserver.ipp.PrinterCapabilities
 import dev.jaspreet.printserver.ipp.PrinterQuery
 import dev.jaspreet.printserver.ipp.TxtRecords
 import dev.jaspreet.printserver.jobs.JobQueue
+import dev.jaspreet.printserver.profile.VerifiedPrinterProfile
 import dev.jaspreet.printserver.profile.VerifiedPrinterProfiles
 import dev.jaspreet.printserver.jobs.JobState
 import dev.jaspreet.printserver.jobs.QueueState
@@ -145,9 +146,12 @@ class ServerService : Service() {
                     return fail(
                         "$detected is not a verified printer for on-device rendering — " +
                             "only the HP DeskJet 2300 series is currently supported",
+                        manufacturer = deviceIdInfo.manufacturer,
+                        model = deviceIdInfo.model,
+                        unsupportedDevice = true,
                     )
                 }
-                startLegacyPipeline(usb, device, bindAddr, deviceIdInfo)
+                startLegacyPipeline(usb, device, bindAddr, deviceIdInfo, profile)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Pipeline start failed", e)
@@ -198,6 +202,7 @@ class ServerService : Service() {
         device: android.hardware.usb.UsbDevice,
         bindAddr: java.net.Inet4Address,
         deviceIdInfo: DeviceIdInfo,
+        profile: VerifiedPrinterProfile,
     ) {
         val initialLegacyTransport = usb.openLegacyTransport(device)
             ?: return fail("Printer has no usable USB interface")
@@ -363,6 +368,8 @@ class ServerService : Service() {
                 scanCapabilities = liveScanCapabilities,
                 supplyStatus = supplyResult.status,
                 supplyFailureReason = supplyResult.failureReason,
+                profileId = profile.id,
+                profileName = profile.displayName,
             )
         }
         notify(legacyNotificationMessage(caps.makeAndModel, hostAddress, scanState, scanFailureReason))
@@ -613,8 +620,20 @@ class ServerService : Service() {
         ScanState.SCANNING -> "Printing ready; scanning active for $makeAndModel"
     }
 
-    private fun fail(message: String) {
-        update { ServerStatus(message = message) }
+    private fun fail(
+        message: String,
+        manufacturer: String? = null,
+        model: String? = null,
+        unsupportedDevice: Boolean = false,
+    ) {
+        update {
+            ServerStatus(
+                message = message,
+                manufacturer = manufacturer,
+                model = model,
+                unsupportedDevice = unsupportedDevice,
+            )
+        }
         notify(message)
         stopSelf()
     }

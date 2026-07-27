@@ -399,6 +399,15 @@ fun PrintServerApp(
                                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                                             fontSize = 13.sp
                                         )
+                                        if (status.unsupportedDevice &&
+                                            (status.manufacturer != null || status.model != null)
+                                        ) {
+                                            Text(
+                                                text = "Detected: ${status.manufacturer ?: "Unknown"} ${status.model ?: ""}".trim(),
+                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                                fontSize = 12.sp
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -597,6 +606,7 @@ fun PrintServerApp(
                                     },
                                     "Manufacturer" to (status.manufacturer ?: "N/A"),
                                     "Model" to (status.model ?: "N/A"),
+                                    "Verified Profile" to (status.profileName ?: "N/A"),
                                     "Serial" to (status.serialNumber ?: "N/A"),
                                     "VID:PID" to (status.vidPid ?: "N/A"),
                                     "PDLs" to if (status.pdls.isNotEmpty()) status.pdls.joinToString(", ") else "N/A",
