@@ -173,6 +173,107 @@ class JobQueueTest {
     }
 
     @Test
+    fun `a job submitted after a timeout poisons the queue is failed without invoking the pipeline again`() {
+        // Reproduces the scenario Task 11 asks us to verify: once a render times out, the
+        // original render call is left running forever on renderExecutor's thread (it can't be
+        // safely killed) and the queue is poisoned. A job submitted afterward must be diverted
+        // by the worker loop's `if (poisoned)` check *before* it ever reaches process() —
+        // pipeline.render() must not be invoked a second time while the first is still hung.
+        val invocations = java.util.concurrent.atomic.AtomicInteger(0)
+        val firstEntered = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val pipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
+            override fun render(
+                document: File, output: File, format: String,
+                quality: PrintQuality, colorMode: ColorMode,
+            ) {
+                invocations.incrementAndGet()
+                firstEntered.countDown()
+                releaseFirst.await(5, TimeUnit.SECONDS) // never reached by the second call
+                output.writeBytes("X".toByteArray())
+            }
+        }
+        val stuck = CountDownLatch(1)
+        val q = JobQueue(
+            pipeline, { FakePrinterTransport { ByteArray(0) } },
+            renderTimeoutMs = 100,
+            onPipelineStuck = { stuck.countDown() },
+        )
+        queue = q
+
+        val firstId = q.submit(pdf(), "job-timeout")
+        assertTrue("onPipelineStuck should fire once the render exceeds renderTimeoutMs", stuck.await(5, TimeUnit.SECONDS))
+        assertTrue(firstEntered.await(5, TimeUnit.SECONDS))
+        val deadline = System.currentTimeMillis() + 5000
+        while (q.get(firstId)!!.state != JobState.ABORTED && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10)
+        }
+        assertEquals(JobState.ABORTED, q.get(firstId)!!.state)
+        assertEquals("render-timeout", q.get(firstId)!!.stateReason)
+
+        val secondId = q.submit(pdf(), "job-after-poison")
+        val deadline2 = System.currentTimeMillis() + 5000
+        while (q.get(secondId)!!.state != JobState.ABORTED && System.currentTimeMillis() < deadline2) {
+            Thread.sleep(10)
+        }
+        assertEquals(JobState.ABORTED, q.get(secondId)!!.state)
+        assertEquals("queue-unavailable", q.get(secondId)!!.stateReason)
+        assertEquals("pipeline.render() must not run a second time", 1, invocations.get())
+
+        releaseFirst.countDown() // let the original hung render finish so its thread doesn't leak past the test
+    }
+
+    @Test
+    fun `retrying a job after a timeout poisons the queue is failed without invoking the pipeline again`() {
+        // Same scenario as above, but specifically through JobQueue.retry() — retry()'s
+        // submit(copy, ...) doesn't check `poisoned` itself; only the worker loop does, right
+        // before process() is called. This confirms a retried job is still caught there.
+        val invocations = java.util.concurrent.atomic.AtomicInteger(0)
+        val firstEntered = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val pipeline = object : dev.jaspreet.printserver.render.RenderingPipeline {
+            override fun render(
+                document: File, output: File, format: String,
+                quality: PrintQuality, colorMode: ColorMode,
+            ) {
+                invocations.incrementAndGet()
+                firstEntered.countDown()
+                releaseFirst.await(5, TimeUnit.SECONDS)
+                output.writeBytes("X".toByteArray())
+            }
+        }
+        val stuck = CountDownLatch(1)
+        val q = JobQueue(
+            pipeline, { FakePrinterTransport { ByteArray(0) } },
+            renderTimeoutMs = 100,
+            onPipelineStuck = { stuck.countDown() },
+        )
+        queue = q
+
+        val firstId = q.submit(pdf(), "job-timeout")
+        assertTrue(stuck.await(5, TimeUnit.SECONDS))
+        assertTrue(firstEntered.await(5, TimeUnit.SECONDS))
+        val deadline = System.currentTimeMillis() + 5000
+        while (q.get(firstId)!!.state != JobState.ABORTED && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10)
+        }
+        assertEquals(JobState.ABORTED, q.get(firstId)!!.state)
+        assertTrue("retry() requires the spool file to still exist", q.get(firstId)!!.spoolFile.exists())
+
+        val retryId = q.retry(firstId)
+        assertNotNull("retry should still register a new job even though the queue is poisoned", retryId)
+        val deadline2 = System.currentTimeMillis() + 5000
+        while (q.get(retryId!!)!!.state != JobState.ABORTED && System.currentTimeMillis() < deadline2) {
+            Thread.sleep(10)
+        }
+        assertEquals(JobState.ABORTED, q.get(retryId)!!.state)
+        assertEquals("queue-unavailable", q.get(retryId)!!.stateReason)
+        assertEquals("pipeline.render() must not run a second time for the retried job", 1, invocations.get())
+
+        releaseFirst.countDown()
+    }
+
+    @Test
     fun `evicting a retained ABORTED job deletes its spool file`() {
         // MAX_RETAINED_JOBS is 200 — submit 201 jobs that all fail, forcing eviction of the oldest.
         val done = java.util.concurrent.atomic.AtomicInteger(0)

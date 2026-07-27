@@ -35,7 +35,7 @@ class NativePipelineFixtureTest {
         try {
             GhostscriptRenderer(dpi = 300).renderToPpm(pdf, ppm)
             val img = ppm.inputStream().buffered().use { PpmImage.parse(it) }
-            val code = HpcupsNative.encode(
+            val code = HpcupsNative.encodeGuarded(
                 img.rgb, img.width, img.height, 300, PpdAsset.extract(ctx).absolutePath, pcl.absolutePath,
                 "ColorModel=RGB OutputMode=Normal",
             )

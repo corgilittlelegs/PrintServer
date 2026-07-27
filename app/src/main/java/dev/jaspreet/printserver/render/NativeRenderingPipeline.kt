@@ -65,7 +65,7 @@ class NativeRenderingPipeline(
         raster: File, output: File, options: String,
         format: String, quality: PrintQuality, colorMode: ColorMode,
     ) {
-        val code = HpcupsNative.encodeRaster(raster.absolutePath, ppdPath, output.absolutePath, options)
+        val code = HpcupsNative.encodeRasterGuarded(raster.absolutePath, ppdPath, output.absolutePath, options)
         checkResult(code, format, quality, colorMode)
     }
 
@@ -98,7 +98,7 @@ class NativeRenderingPipeline(
                 rgb[i++] = ((pixel shr 8) and 0xFF).toByte()
                 rgb[i++] = (pixel and 0xFF).toByte()
             }
-            val code = HpcupsNative.encode(rgb, width, height, dpi, ppdPath, output.absolutePath, options)
+            val code = HpcupsNative.encodeGuarded(rgb, width, height, dpi, ppdPath, output.absolutePath, options)
             checkResult(code, format, quality, colorMode)
         } finally {
             bitmap.recycle()
@@ -121,7 +121,7 @@ class NativeRenderingPipeline(
                 for (page in pages) {
                     val img = page.inputStream().buffered().use { PpmImage.parse(it) }
                     val pageOut = File(pageDir, "${page.name}.pcl")
-                    val code = HpcupsNative.encode(
+                    val code = HpcupsNative.encodeGuarded(
                         img.rgb, img.width, img.height, dpi, ppdPath, pageOut.absolutePath, options,
                     )
                     checkResult(code, format, quality, colorMode, page = page.name)
