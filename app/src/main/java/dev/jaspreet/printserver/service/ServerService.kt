@@ -31,6 +31,7 @@ import dev.jaspreet.printserver.ipp.PrinterCapabilities
 import dev.jaspreet.printserver.ipp.PrinterQuery
 import dev.jaspreet.printserver.ipp.TxtRecords
 import dev.jaspreet.printserver.jobs.JobQueue
+import dev.jaspreet.printserver.profile.VerifiedPrinterProfiles
 import dev.jaspreet.printserver.jobs.JobState
 import dev.jaspreet.printserver.jobs.QueueState
 import dev.jaspreet.printserver.relay.ActivityMonitor
@@ -134,6 +135,18 @@ class ServerService : Service() {
             if (ippTransports.isNotEmpty()) {
                 startIppPipeline(name, ippTransports, bindAddr, device, deviceIdInfo)
             } else {
+                val profile = VerifiedPrinterProfiles.match(
+                    deviceIdInfo, vendorId = device.vendorId, productId = device.productId,
+                )
+                if (profile == null) {
+                    val detected = listOfNotNull(deviceIdInfo.manufacturer, deviceIdInfo.model)
+                        .joinToString(" ")
+                        .ifBlank { "this printer" }
+                    return fail(
+                        "$detected is not a verified printer for on-device rendering — " +
+                            "only the HP DeskJet 2300 series is currently supported",
+                    )
+                }
                 startLegacyPipeline(usb, device, bindAddr, deviceIdInfo)
             }
         } catch (e: Exception) {
