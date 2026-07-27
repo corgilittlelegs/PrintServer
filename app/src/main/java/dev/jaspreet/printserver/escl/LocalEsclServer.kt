@@ -400,13 +400,25 @@ class LocalEsclServer(
         cout.flush()
     }
 
+    /**
+     * Stops accepting new connections and waits (bounded by [STOP_JOIN_TIMEOUT_MS]) for
+     * in-flight work — including a running [performScan] call — to actually finish before
+     * returning. A scan's transport-close (via legacySession.tryWriteExclusive, see
+     * ServerService) doesn't respond to interrupt, so callers that close the shared legacy
+     * USB transport right after stop() must not race a scan still in progress.
+     */
     fun stop() {
         try { serverSocket?.close() } catch (_: IOException) {}
         executor.shutdownNow()
+        executor.awaitTermination(STOP_JOIN_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
 
     companion object {
         // Caps the jobs map (see evictOldTerminalJobs) -- mirrors JobQueue's/ActivityLog's 200-entry cap.
         private const val MAX_RETAINED_JOBS = 200
+
+        // Bounds how long stop() waits for an in-flight scan to finish -- long enough for
+        // a real flatbed scan's final chunks, short enough not to hang app teardown.
+        private const val STOP_JOIN_TIMEOUT_MS = 10_000L
     }
 }
