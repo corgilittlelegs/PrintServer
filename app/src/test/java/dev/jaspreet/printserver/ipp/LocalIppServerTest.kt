@@ -15,7 +15,9 @@ import dev.jaspreet.printserver.scan.SupplyCartridge
 import dev.jaspreet.printserver.scan.SupplyStatus
 import dev.jaspreet.printserver.usb.FakePrinterTransport
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -23,8 +25,11 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.Socket
 import java.net.URI
 import java.net.URL
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 
 class LocalIppServerTest {
 
@@ -490,5 +495,192 @@ class LocalIppServerTest {
         val resp = ipp(port, request, "%PDF".toByteArray())
         val jobId = resp[Tag.jobAttributes]!!.getValue(Types.jobId)!!
         assertEquals(dev.jaspreet.printserver.jobs.ColorMode.MONOCHROME, queue!!.get(jobId)!!.colorMode)
+    }
+
+    /** Captures exactly the bytes the worker actually saw for [render], before JobQueue deletes
+     *  the spool file — lets tests assert on spooled content without racing the worker thread. */
+    private class CapturingRenderingPipeline : dev.jaspreet.printserver.render.RenderingPipeline {
+        val captured = CompletableFuture<ByteArray>()
+        override fun render(
+            document: File, output: File, format: String,
+            quality: dev.jaspreet.printserver.jobs.PrintQuality, colorMode: dev.jaspreet.printserver.jobs.ColorMode,
+        ) {
+            captured.complete(document.readBytes())
+            output.writeBytes(ByteArray(0))
+        }
+    }
+
+    @Test
+    fun `print-job spools a large document byte-for-byte via streaming, not full in-memory buffering`() {
+        val pipeline = CapturingRenderingPipeline()
+        val port = start(pipeline)
+        // Comfortably larger than the 64KB copy buffer used by streamToFile, and larger than the
+        // BufferedInputStream/DataInputStream default buffers IppInputStream wraps internally, so
+        // this exercises many read/write cycles rather than a single pass.
+        val document = ByteArray(2_000_000) { (it % 251).toByte() }
+        val resp = ipp(port, IppPacket(Operation.printJob, 60, operationGroup()), document)
+        assertEquals(Status.successfulOk, resp.status)
+        val spooled = pipeline.captured.get(10, TimeUnit.SECONDS)
+        assertArrayEquals(document, spooled)
+    }
+
+    @Test
+    fun `create-job leaves an empty spool file`() {
+        val port = start()
+        val resp = ipp(port, IppPacket(Operation.createJob, 61, operationGroup()))
+        assertEquals(Status.successfulOk, resp.status)
+        val jobId = resp[Tag.jobAttributes]!!.getValue(Types.jobId)!!
+        val job = queue!!.get(jobId)!!
+        assertEquals(dev.jaspreet.printserver.jobs.JobState.PENDING, job.state)
+        assertTrue("reserve()'s spool file must exist even though it's empty", job.spoolFile.exists())
+        assertEquals(0L, job.spoolFile.length())
+    }
+
+    @Test
+    fun `send-document streams and appends the document to the create-job-reserved spool file`() {
+        val pipeline = CapturingRenderingPipeline()
+        val port = start(pipeline)
+        val createResp = ipp(port, IppPacket(Operation.createJob, 62, operationGroup()))
+        val jobId = createResp[Tag.jobAttributes]!!.getValue(Types.jobId)!!
+        assertEquals(0L, queue!!.get(jobId)!!.spoolFile.length())
+
+        val sendRequest = IppPacket(
+            Operation.sendDocument, 63,
+            groupOf(
+                Tag.operationAttributes,
+                Types.attributesCharset.of("utf-8"),
+                Types.attributesNaturalLanguage.of("en"),
+                Types.printerUri.of(URI.create("ipp://127.0.0.1/ipp/print")),
+                Types.jobId.of(jobId),
+            ),
+        )
+        val document = ByteArray(300_000) { (it % 199).toByte() }
+        val sendResp = ipp(port, sendRequest, document)
+        assertEquals(Status.successfulOk, sendResp.status)
+        assertEquals(
+            "our one-shot model treats every Send-Document as final",
+            com.hp.jipp.model.JobState.pending,
+            sendResp[Tag.jobAttributes]!!.getValue(Types.jobState),
+        )
+
+        val spooled = pipeline.captured.get(10, TimeUnit.SECONDS)
+        assertArrayEquals(document, spooled)
+    }
+
+    @Test
+    fun `send-document is rejected once the reserved job has left PENDING`() {
+        val firstStarted = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val blockOnFirst = object : dev.jaspreet.printserver.render.RenderingPipeline {
+            override fun render(
+                document: File, output: File, format: String,
+                quality: dev.jaspreet.printserver.jobs.PrintQuality, colorMode: dev.jaspreet.printserver.jobs.ColorMode,
+            ) {
+                firstStarted.countDown()
+                release.await()
+            }
+        }
+        val port = start(blockOnFirst)
+        // Occupy the single worker so the reserved job below can never leave PENDING on its own —
+        // instead we cancel it directly to force a non-PENDING state deterministically.
+        ipp(port, IppPacket(Operation.printJob, 64, operationGroup()), "%PDF".toByteArray())
+        assertTrue(firstStarted.await(5, TimeUnit.SECONDS))
+
+        val createResp = ipp(port, IppPacket(Operation.createJob, 65, operationGroup()))
+        val jobId = createResp[Tag.jobAttributes]!!.getValue(Types.jobId)!!
+        assertTrue(queue!!.cancel(jobId))
+
+        val sendRequest = IppPacket(
+            Operation.sendDocument, 66,
+            groupOf(
+                Tag.operationAttributes,
+                Types.attributesCharset.of("utf-8"),
+                Types.attributesNaturalLanguage.of("en"),
+                Types.printerUri.of(URI.create("ipp://127.0.0.1/ipp/print")),
+                Types.jobId.of(jobId),
+            ),
+        )
+        val sendResp = ipp(port, sendRequest, "%PDF late".toByteArray())
+        assertEquals(Status.clientErrorNotPossible, sendResp.status)
+        release.countDown()
+    }
+
+    /** Reads one full HTTP/IPP response (head + exactly Content-Length body bytes) off a raw socket. */
+    private fun readIppResponse(input: java.io.InputStream): IppPacket {
+        val head = dev.jaspreet.printserver.http.HttpHead.parse(input)
+            ?: error("connection closed before a response head arrived")
+        val len = head.get("Content-Length")?.trim()?.toIntOrNull()
+            ?: error("response had no Content-Length")
+        val body = ByteArray(len)
+        var off = 0
+        while (off < len) {
+            val n = input.read(body, off, len - off)
+            check(n >= 0) { "unexpected EOF reading response body ($off/$len bytes read)" }
+            off += n
+        }
+        return IppInputStream(ByteArrayInputStream(body)).readPacket()
+    }
+
+    private fun writeIppRequest(output: java.io.OutputStream, packet: IppPacket, document: ByteArray) {
+        val body = ByteArrayOutputStream()
+        IppOutputStream(body).write(packet)
+        body.write(document)
+        val bodyBytes = body.toByteArray()
+        val head = "POST /ipp/print HTTP/1.1\r\n" +
+            "Host: 127.0.0.1\r\n" +
+            "Content-Type: application/ipp\r\n" +
+            "Content-Length: ${bodyBytes.size}\r\n" +
+            "Connection: keep-alive\r\n\r\n"
+        output.write(head.toByteArray(Charsets.ISO_8859_1))
+        output.write(bodyBytes)
+        output.flush()
+    }
+
+    @Test
+    fun `two ipp requests pipelined on one persistent connection are both parsed and handled correctly`() {
+        val port = start()
+        Socket("127.0.0.1", port).use { socket ->
+            val out = socket.getOutputStream()
+            val input = socket.getInputStream()
+
+            writeIppRequest(out, IppPacket(Operation.printJob, 70, operationGroup()), "%PDF first document".toByteArray())
+            val resp1 = readIppResponse(input)
+            assertEquals(Status.successfulOk, resp1.status)
+            val jobId1 = resp1[Tag.jobAttributes]!!.getValue(Types.jobId)!!
+
+            // If the first request's body (or its HTTP framing) weren't fully/correctly drained,
+            // this second head would be misparsed off whatever bytes were left over — this is the
+            // core "persistent connections" assertion for this test.
+            writeIppRequest(
+                out,
+                IppPacket(Operation.printJob, 71, operationGroup()),
+                "%PDF a completely different second document, longer than the first one".toByteArray(),
+            )
+            val resp2 = readIppResponse(input)
+            assertEquals(Status.successfulOk, resp2.status)
+            val jobId2 = resp2[Tag.jobAttributes]!!.getValue(Types.jobId)!!
+
+            assertNotEquals("second request must get its own distinct job id", jobId1, jobId2)
+            assertNotNull(queue!!.get(jobId1))
+            assertNotNull(queue!!.get(jobId2))
+        }
+    }
+
+    @Test
+    fun `an attribute-only operation followed by a print-job on the same connection both parse correctly`() {
+        val port = start()
+        Socket("127.0.0.1", port).use { socket ->
+            val out = socket.getOutputStream()
+            val input = socket.getInputStream()
+
+            writeIppRequest(out, IppPacket(Operation.getPrinterAttributes, 72, operationGroup()), ByteArray(0))
+            val resp1 = readIppResponse(input)
+            assertEquals(Status.successfulOk, resp1.status)
+
+            writeIppRequest(out, IppPacket(Operation.printJob, 73, operationGroup()), "%PDF after an attribute-only request".toByteArray())
+            val resp2 = readIppResponse(input)
+            assertEquals(Status.successfulOk, resp2.status)
+            assertNotNull(resp2[Tag.jobAttributes]!!.getValue(Types.jobId))
+        }
     }
 }

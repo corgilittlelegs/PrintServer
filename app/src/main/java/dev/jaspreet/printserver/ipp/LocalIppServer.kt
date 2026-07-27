@@ -12,6 +12,7 @@ import com.hp.jipp.model.Status
 import com.hp.jipp.model.Types
 import dev.jaspreet.printserver.http.BodyReader
 import dev.jaspreet.printserver.http.BodyTooLargeException
+import dev.jaspreet.printserver.http.DecodedBodyInputStream
 import dev.jaspreet.printserver.http.HttpHead
 import dev.jaspreet.printserver.jobs.ColorMode
 import dev.jaspreet.printserver.jobs.JobQueue
@@ -20,10 +21,12 @@ import dev.jaspreet.printserver.jobs.PrintQuality
 import dev.jaspreet.printserver.scan.SupplyStatus
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
-import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.RandomAccessFile
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -78,8 +81,15 @@ class LocalIppServer(
             while (true) {
                 val head = try { HttpHead.parse(cin) ?: break } catch (_: IOException) { break }
                 val response = try {
-                    val body = BodyReader.readAll(head, cin, maxDocumentBytes)
-                    handleIpp(body, clientAddress)
+                    // DecodedBodyInputStream presents exactly this request's body (whatever the
+                    // framing) as a stream that stops at -1 at its logical end, including
+                    // consuming chunked framing/trailers — so handleIpp can parse the (small,
+                    // bounded) IPP attribute packet directly off it, then stream any remaining
+                    // document bytes straight to a spool file, without ever buffering the whole
+                    // body in memory. Draining it fully (handleIpp guarantees this) is what keeps
+                    // cin correctly positioned for the next pipelined request below.
+                    val decodedBody = DecodedBodyInputStream(head, cin, maxDocumentBytes)
+                    handleIpp(decodedBody, clientAddress)
                 } catch (e: BodyTooLargeException) {
                     // The client already sent bytes we're discarding; the connection
                     // can't be reused, so this is the last response on it (Step below).
@@ -102,25 +112,47 @@ class LocalIppServer(
         }
     }
 
-    private fun handleIpp(body: ByteArray, clientAddress: String?): IppPacket {
-        val input = IppInputStream(ByteArrayInputStream(body))
-        val request = input.readPacket()
-        // Any bytes after the IPP packet are the document payload (Print-Job).
-        val document = input.readBytes()
+    /**
+     * Parses the IPP attribute-group packet directly off [decodedBody] — a bounded, in-memory
+     * prefix — then dispatches. Print-Job/Send-Document read whatever document bytes remain
+     * *directly off the same stream* into a spool file (see [streamToFile]); no operation ever
+     * materializes the document as a `ByteArray`.
+     *
+     * [input] (the [IppInputStream] wrapping [decodedBody]) is drained to its logical end no
+     * matter which branch runs or whether it throws, so a persistent connection's next pipelined
+     * request always finds the raw socket stream correctly positioned right after this body.
+     */
+    private fun handleIpp(decodedBody: DecodedBodyInputStream, clientAddress: String?): IppPacket {
+        val input = IppInputStream(decodedBody)
+        try {
+            val request = input.readPacket()
+            return when (request.code) {
+                Operation.getPrinterAttributes.code -> getPrinterAttributes(request)
+                Operation.validateJob.code -> validateJob(request)
+                Operation.printJob.code -> printJob(request, input, clientAddress)
+                Operation.createJob.code -> createJob(request, clientAddress)
+                Operation.sendDocument.code -> sendDocument(request, input)
+                Operation.closeJob.code -> closeJob(request)
+                Operation.getJobAttributes.code -> jobAttributes(request)
+                Operation.getJobs.code -> getJobs(request)
+                Operation.cancelJob.code -> cancelJob(request)
+                Operation.cancelMyJobs.code -> cancelMyJobs(request)
+                Operation.identifyPrinter.code -> IppPacket(Status.successfulOk, request.requestId, operationGroup())
+                else -> errorResponse(request.requestId, Status.serverErrorOperationNotSupported)
+            }
+        } finally {
+            // Attribute-only operations (Validate-Job, Create-Job, ...) never read `input`
+            // themselves, so a client that incorrectly attaches trailing bytes to one of those
+            // would otherwise leave them unread — drain unconditionally rather than trusting
+            // each handler to fully consume its share.
+            drainRemaining(input)
+        }
+    }
 
-        return when (request.code) {
-            Operation.getPrinterAttributes.code -> getPrinterAttributes(request)
-            Operation.validateJob.code -> validateJob(request)
-            Operation.printJob.code -> printJob(request, document, clientAddress)
-            Operation.createJob.code -> createJob(request, clientAddress)
-            Operation.sendDocument.code -> sendDocument(request, document)
-            Operation.closeJob.code -> closeJob(request)
-            Operation.getJobAttributes.code -> jobAttributes(request)
-            Operation.getJobs.code -> getJobs(request)
-            Operation.cancelJob.code -> cancelJob(request)
-            Operation.cancelMyJobs.code -> cancelMyJobs(request)
-            Operation.identifyPrinter.code -> IppPacket(Status.successfulOk, request.requestId, operationGroup())
-            else -> errorResponse(request.requestId, Status.serverErrorOperationNotSupported)
+    private fun drainRemaining(input: InputStream) {
+        val buf = ByteArray(65536)
+        while (input.read(buf) >= 0) {
+            // discard — this only runs past what a well-behaved handler already consumed.
         }
     }
 
@@ -145,10 +177,7 @@ class LocalIppServer(
         return IppPacket(Status.successfulOk, request.requestId, operationGroup())
     }
 
-    private fun printJob(request: IppPacket, document: ByteArray, clientAddress: String?): IppPacket {
-        if (document.isEmpty()) {
-            return errorResponse(request.requestId, Status.clientErrorBadRequest)
-        }
+    private fun printJob(request: IppPacket, input: InputStream, clientAddress: String?): IppPacket {
         val requestedUri = request[Tag.operationAttributes]?.getValue(Types.printerUri)
         if (requestedUri == null) {
             return errorResponse(request.requestId, Status.clientErrorBadRequest)
@@ -159,7 +188,11 @@ class LocalIppServer(
         }
         spoolDir.mkdirs()
         val spool = File.createTempFile("job", spoolExtension(format), spoolDir)
-        spool.writeBytes(document)
+        val written = streamToFile(input, spool, append = false)
+        if (written == 0L) {
+            spool.delete()
+            return errorResponse(request.requestId, Status.clientErrorBadRequest)
+        }
         val name = request[Tag.operationAttributes]?.getValue(Types.jobName)?.value ?: "untitled"
         val jobId = jobQueue.submit(spool, name, format, clientAddress, resolveQuality(request), resolveColorMode(request))
         // Report the queue's real state — submit() only enqueues, it does not
@@ -206,7 +239,7 @@ class LocalIppServer(
     }
 
     /** Send-Document: delivers the document bytes for a job reserved via Create-Job. */
-    private fun sendDocument(request: IppPacket, document: ByteArray): IppPacket {
+    private fun sendDocument(request: IppPacket, input: InputStream): IppPacket {
         val jobId = request[Tag.operationAttributes]?.getValue(Types.jobId)
             ?: return errorResponse(request.requestId, Status.clientErrorBadRequest)
         val job = jobQueue.get(jobId)
@@ -218,7 +251,7 @@ class LocalIppServer(
         if (job.state != JobState.PENDING) {
             return errorResponse(request.requestId, Status.clientErrorNotPossible)
         }
-        if (document.isNotEmpty()) job.spoolFile.appendBytes(document)
+        streamToFile(input, job.spoolFile, append = true)
         // We don't support multi-document jobs, so treat every Send-Document as final
         // regardless of the client's stated intent — matches Print-Job's one-shot model.
         jobQueue.enqueue(jobId)
@@ -345,6 +378,39 @@ class LocalIppServer(
             requested == "monochrome" -> ColorMode.MONOCHROME
             requested == "color" && capabilities.color -> ColorMode.COLOR
             else -> if (capabilities.color) ColorMode.COLOR else ColorMode.MONOCHROME
+        }
+    }
+
+    /**
+     * Streams whatever bytes remain on [input] straight to [file] — never materializing them as
+     * a `ByteArray` — either truncating (Print-Job, a fresh spool file) or appending (Send-
+     * Document, onto a Create-Job-reserved file). Returns the number of bytes written.
+     *
+     * On failure the file is restored to the state it had before this call: deleted outright for
+     * a fresh (non-append) spool file, or truncated back to its pre-call length for an append —
+     * an already-reserved job's spool file isn't ours to delete, only to fail cleanly against.
+     */
+    private fun streamToFile(input: InputStream, file: File, append: Boolean): Long {
+        val originalLength = if (append) file.length() else 0L
+        var written = 0L
+        try {
+            FileOutputStream(file, append).use { out ->
+                val buf = ByteArray(65536)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    written += n
+                }
+            }
+            return written
+        } catch (e: Exception) {
+            if (append) {
+                try { RandomAccessFile(file, "rw").use { it.setLength(originalLength) } } catch (_: IOException) {}
+            } else {
+                file.delete()
+            }
+            throw e
         }
     }
 
