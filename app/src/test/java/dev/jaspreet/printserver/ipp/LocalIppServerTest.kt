@@ -9,6 +9,8 @@ import com.hp.jipp.encoding.Tag
 import com.hp.jipp.model.Operation
 import com.hp.jipp.model.Status
 import com.hp.jipp.model.Types
+import dev.jaspreet.printserver.activity.ActivityStatus
+import dev.jaspreet.printserver.activity.toActivityStatus
 import dev.jaspreet.printserver.jobs.JobQueue
 import dev.jaspreet.printserver.render.FakeRenderingPipeline
 import dev.jaspreet.printserver.scan.SupplyCartridge
@@ -17,6 +19,7 @@ import dev.jaspreet.printserver.usb.FakePrinterTransport
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -832,10 +835,27 @@ class LocalIppServerTest {
             0L,
             job.spoolFile.length(),
         )
+        // The job must never be enqueued (that would race the worker with a truncated
+        // document) — but it also must not be left PENDING forever: that would show as
+        // permanently "printing" in the activity feed and never free its queue slot. It's
+        // finalized as ABORTED with a reason distinct from render/document-format failures.
         assertEquals(
-            "the job must remain PENDING — a failed Send-Document must never enqueue it",
-            dev.jaspreet.printserver.jobs.JobState.PENDING,
+            "a failed Send-Document must finalize the job as ABORTED, not leave it PENDING forever",
+            dev.jaspreet.printserver.jobs.JobState.ABORTED,
             job.state,
+        )
+        assertEquals(
+            "request-entity-too-large",
+            job.stateReason,
+        )
+        assertEquals(
+            "the activity feed must report this as failed, not stuck 'printing'",
+            ActivityStatus.FAILED,
+            job.state.toActivityStatus(),
+        )
+        assertFalse(
+            "an ABORTED job must not still be counted as active (occupying a queue slot)",
+            queue!!.listActive().contains(job),
         )
     }
 }

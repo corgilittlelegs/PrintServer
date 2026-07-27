@@ -152,6 +152,32 @@ class JobQueue(
     }
 
     /**
+     * Finalizes a still-PENDING job as ABORTED with [reason] without ever handing it to the
+     * worker — for a two-phase (Create-Job/Send-Document) job whose document delivery fails
+     * before it's enqueued (e.g. Send-Document's body exceeds the size cap). Mirrors [cancel]'s
+     * shape, but sets [PrintJob.stateReason] and fires [onJobFinished] too, since this is a
+     * genuine terminal failure the client/activity feed needs to see — not a cancellation.
+     *
+     * The caller is responsible for the spool file's contents (e.g. [LocalIppServer]'s
+     * streamToFile already truncates a failed append back to its pre-call length); this only
+     * updates job state. Returns false if [id] is unknown or the job already left PENDING.
+     */
+    fun fail(id: Int, reason: String): Boolean {
+        val job = jobs[id] ?: return false
+        val failed = synchronized(job) {
+            if (job.state != JobState.PENDING) return false
+            job.state = JobState.ABORTED
+            job.stateReason = reason
+            true
+        }
+        if (failed) {
+            onJobStateChanged(job)
+            onJobFinished(job)
+        }
+        return failed
+    }
+
+    /**
      * Resubmits an ABORTED job's original document as a new job, copied into a fresh
      * spool file (never shares the original file with the new job — a second retry of
      * the same original id, or the new job completing and deleting its own file, must

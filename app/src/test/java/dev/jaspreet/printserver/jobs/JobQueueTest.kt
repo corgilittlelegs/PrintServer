@@ -384,4 +384,52 @@ class JobQueueTest {
             q.get(id)!!.spooledBytes,
         )
     }
+
+    @Test
+    fun `fail transitions a PENDING job to ABORTED with the given reason and fires callbacks, without enqueueing it`() {
+        val printer = FakePrinterTransport { ByteArray(0) }
+        val stateChanges = mutableListOf<JobState>()
+        val finished = CountDownLatch(1)
+        val q = JobQueue(
+            FakeRenderingPipeline("PCL!".toByteArray()),
+            { printer },
+            onJobStateChanged = { stateChanges += it.state },
+            onJobFinished = { finished.countDown() },
+        )
+        queue = q
+        val spool = File.createTempFile("job", ".pdf").also { tempFiles += it } // empty, as reserve() expects
+        val id = q.reserve(spool, "two-phase-doc")
+
+        assertTrue(q.fail(id, "request-entity-too-large"))
+
+        val job = q.get(id)!!
+        assertEquals(JobState.ABORTED, job.state)
+        assertEquals("request-entity-too-large", job.stateReason)
+        assertTrue("onJobFinished must fire for a fail()-ed job", finished.await(5, TimeUnit.SECONDS))
+        assertTrue(stateChanges.contains(JobState.ABORTED))
+        // Never handed to the worker — pipeline.render() must not run for a failed job.
+        assertFalse(q.listActive().contains(job))
+    }
+
+    @Test
+    fun `fail is a no-op for a job that already left PENDING`() {
+        val printer = FakePrinterTransport { ByteArray(0) }
+        val done = CountDownLatch(1)
+        val q = JobQueue(FakeRenderingPipeline("PCL!".toByteArray()), { printer }) { done.countDown() }
+        queue = q
+        val id = q.submit(pdf(), "test-doc")
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertEquals(JobState.COMPLETED, q.get(id)!!.state)
+
+        assertFalse(q.fail(id, "request-entity-too-large"))
+        assertEquals(JobState.COMPLETED, q.get(id)!!.state)
+    }
+
+    @Test
+    fun `fail on an unknown id returns false`() {
+        val printer = FakePrinterTransport { ByteArray(0) }
+        val q = JobQueue(FakeRenderingPipeline(), { printer })
+        queue = q
+        assertFalse(q.fail(999, "request-entity-too-large"))
+    }
 }

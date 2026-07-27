@@ -251,7 +251,19 @@ class LocalIppServer(
         if (job.state != JobState.PENDING) {
             return errorResponse(request.requestId, Status.clientErrorNotPossible)
         }
-        streamToFile(input, job.spoolFile, append = true)
+        try {
+            streamToFile(input, job.spoolFile, append = true)
+        } catch (e: BodyTooLargeException) {
+            // streamToFile already truncated job.spoolFile back to its pre-call (empty)
+            // length — but the job itself would otherwise stay PENDING forever: never
+            // enqueued (correct — we must not race the worker with a truncated document),
+            // yet also never finalized, so it shows as permanently "printing" in the
+            // activity feed and never frees its queue slot. Finalize it as failed here,
+            // distinctly from render/document-format failures, before the caller (handleClient)
+            // turns this exception into the client-facing 413 response.
+            jobQueue.fail(jobId, "request-entity-too-large")
+            throw e
+        }
         // We don't support multi-document jobs, so treat every Send-Document as final
         // regardless of the client's stated intent — matches Print-Job's one-shot model.
         jobQueue.enqueue(jobId)
