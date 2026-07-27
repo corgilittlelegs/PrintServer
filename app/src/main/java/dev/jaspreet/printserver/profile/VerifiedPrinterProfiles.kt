@@ -36,26 +36,31 @@ object VerifiedPrinterProfiles {
      * case across firmware/region variants. Manufacturer must be present and match one profile;
      * model must be present and match one of that profile's aliases. A profile's
      * [VerifiedPrinterProfile.requiredCommands], if non-empty, must have at least one entry
-     * present (case-insensitive) in [DeviceIdInfo.commands]. VID/PID matching is supplementary
-     * only: when a profile declares them and the runtime device reports them, a mismatch does
-     * not by itself disqualify a manufacturer/model match, since we don't have a verified VID/PID
-     * for every profile.
+     * present (case-insensitive) in [DeviceIdInfo.commands]. VID/PID matching is supplementary:
+     * it only constrains the match when a profile actually declares [VerifiedPrinterProfile.vendorId]
+     * / [VerifiedPrinterProfile.productId] — a profile without them (true for every profile today,
+     * since none has a verified VID/PID yet) is unaffected by whatever the runtime device reports.
+     * [profiles] defaults to [all] and exists so tests can exercise VID/PID matching against a
+     * profile that declares one, without adding unverified VID/PID data to the real registry.
      */
     fun match(
         deviceIdInfo: DeviceIdInfo,
         vendorId: Int? = null,
         productId: Int? = null,
+        profiles: List<VerifiedPrinterProfile> = all,
     ): VerifiedPrinterProfile? {
         val manufacturer = deviceIdInfo.manufacturer?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val model = deviceIdInfo.model?.trim()?.takeIf { it.isNotEmpty() } ?: return null
 
-        return all.firstOrNull { profile ->
+        return profiles.firstOrNull { profile ->
             profile.manufacturer.equals(manufacturer, ignoreCase = true) &&
                 profile.modelAliases.any { alias -> alias.equals(model, ignoreCase = true) } &&
                 (profile.requiredCommands.isEmpty() ||
                     profile.requiredCommands.any { required ->
                         deviceIdInfo.commands.any { it.equals(required, ignoreCase = true) }
-                    })
+                    }) &&
+                (profile.vendorId == null || profile.vendorId == vendorId) &&
+                (profile.productId == null || profile.productId == productId)
         }
     }
 }

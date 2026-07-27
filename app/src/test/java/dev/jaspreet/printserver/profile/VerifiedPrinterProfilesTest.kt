@@ -59,9 +59,38 @@ class VerifiedPrinterProfilesTest {
     }
 
     @Test
-    fun `vendor and product id are supplementary and do not block a manufacturer-model match`() {
+    fun `vendor and product id are unconstrained for a profile that declares none`() {
+        // DESKJET_2300 has no verified vendorId/productId, so any runtime value (or none) is fine.
         val info = DeviceIdInfo(manufacturer = "HP", model = "deskjet 2300 series")
         val profile = VerifiedPrinterProfiles.match(info, vendorId = 0x03F0, productId = 0x1234)
         assertEquals(VerifiedPrinterProfiles.DESKJET_2300, profile)
+    }
+
+    @Test
+    fun `vendor and product id are enforced when a profile declares them`() {
+        val profileWithVidPid = VerifiedPrinterProfile(
+            id = "test-profile",
+            displayName = "Test Printer",
+            manufacturer = "HP",
+            modelAliases = listOf("test model"),
+            vendorId = 0x03F0,
+            productId = 0x1234,
+        )
+        val info = DeviceIdInfo(manufacturer = "HP", model = "test model")
+
+        val matched = VerifiedPrinterProfiles.match(
+            info, vendorId = 0x03F0, productId = 0x1234, profiles = listOf(profileWithVidPid),
+        )
+        assertEquals(profileWithVidPid, matched)
+
+        val mismatchedVendor = VerifiedPrinterProfiles.match(
+            info, vendorId = 0x0000, productId = 0x1234, profiles = listOf(profileWithVidPid),
+        )
+        assertNull(mismatchedVendor)
+
+        val missingRuntimeVidPid = VerifiedPrinterProfiles.match(
+            info, vendorId = null, productId = null, profiles = listOf(profileWithVidPid),
+        )
+        assertNull(missingRuntimeVidPid)
     }
 }
