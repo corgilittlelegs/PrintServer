@@ -1,6 +1,7 @@
 package dev.jaspreet.printserver.escl
 
 import android.util.Log
+import dev.jaspreet.printserver.http.BodyTooLargeException
 import dev.jaspreet.printserver.http.BodyReader
 import dev.jaspreet.printserver.http.HttpHead
 import dev.jaspreet.printserver.scan.ScanColorMode
@@ -68,6 +69,7 @@ class LocalEsclServer(
     ) -> Unit,
     private val defaultToneSettings: () -> ScanToneSettings = { ScanToneSettings() },
     private val maxConcurrentClients: Int = 64,
+    private val maxRequestBodyBytes: Long = DEFAULT_MAX_REQUEST_BODY_BYTES,
     private val nextDocumentPollDelayMs: Long = 250,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
@@ -127,7 +129,15 @@ class LocalEsclServer(
                 respond(cout, 400, "text/plain", "Bad Request")
                 return
             }
-            val body = try { BodyReader.readAll(head, cin) } catch (_: IOException) { ByteArray(0) }
+            val body = try {
+                BodyReader.readAll(head, cin, maxRequestBodyBytes)
+            } catch (e: BodyTooLargeException) {
+                respond(cout, 413, "text/plain", "Request body too large")
+                return
+            } catch (_: IOException) {
+                respond(cout, 400, "text/plain", "Bad Request")
+                return
+            }
 
             when {
                 method == "GET" && path == "/eSCL/ScannerCapabilities" -> {
@@ -367,7 +377,7 @@ class LocalEsclServer(
     ) {
         val statusText = when (status) {
             200 -> "OK"; 201 -> "Created"; 400 -> "Bad Request"
-            404 -> "Not Found"; 500 -> "Internal Server Error"; 503 -> "Service Unavailable"; else -> "Error"
+            404 -> "Not Found"; 413 -> "Payload Too Large"; 500 -> "Internal Server Error"; 503 -> "Service Unavailable"; else -> "Error"
         }
         val headers = buildString {
             append("HTTP/1.1 $status $statusText\r\n")
@@ -416,6 +426,9 @@ class LocalEsclServer(
     companion object {
         // Caps the jobs map (see evictOldTerminalJobs) -- mirrors JobQueue's/ActivityLog's 200-entry cap.
         private const val MAX_RETAINED_JOBS = 200
+
+        // eSCL POST bodies are small ScanSettings XML documents, not print payloads.
+        private const val DEFAULT_MAX_REQUEST_BODY_BYTES = 64L * 1024L
 
         // Bounds how long stop() waits for an in-flight scan to finish -- long enough for
         // a real flatbed scan's final chunks, short enough not to hang app teardown.

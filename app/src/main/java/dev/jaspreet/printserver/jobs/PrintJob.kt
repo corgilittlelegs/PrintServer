@@ -2,7 +2,7 @@ package dev.jaspreet.printserver.jobs
 
 import java.io.File
 
-enum class JobState { PENDING, PROCESSING, COMPLETED, ABORTED, CANCELED }
+enum class JobState { PENDING, SPOOLING, PROCESSING, COMPLETED, ABORTED, CANCELED }
 
 class PrintJob(
     val id: Int,

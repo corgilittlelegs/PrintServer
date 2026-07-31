@@ -69,6 +69,25 @@ class DecodedBodyInputStreamTest {
     }
 
     @Test
+    fun `rejects malformed or ambiguous HTTP body framing up front`() {
+        val badHeads = listOf(
+            head("Transfer-Encoding" to "xchunked"),
+            head("Content-Length" to "5", "Transfer-Encoding" to "chunked"),
+            head("Content-Length" to "5", "Content-Length" to "5"),
+            head("Content-Length" to "-5"),
+        )
+
+        for (bad in badHeads) {
+            try {
+                DecodedBodyInputStream(bad, ByteArrayInputStream(ByteArray(0)))
+                org.junit.Assert.fail("expected IOException")
+            } catch (e: IOException) {
+                // expected
+            }
+        }
+    }
+
+    @Test
     fun `rejects a chunked body whose cumulative size exceeds the limit`() {
         val chunk = "C8\r\n" + "x".repeat(200) + "\r\n"
         val chunked = chunk.repeat(10) + "0\r\n\r\n"
@@ -82,6 +101,20 @@ class DecodedBodyInputStreamTest {
             org.junit.Assert.fail("expected BodyTooLargeException")
         } catch (e: BodyTooLargeException) {
             // expected
+        }
+    }
+
+    @Test
+    fun `rejects negative chunk size`() {
+        val body = DecodedBodyInputStream(
+            head("Transfer-Encoding" to "chunked"),
+            ByteArrayInputStream("-1\r\n\r\n".toByteArray(Charsets.ISO_8859_1)),
+        )
+        try {
+            readAll(body)
+            org.junit.Assert.fail("expected IOException")
+        } catch (e: IOException) {
+            assertTrue(e.message?.contains("Negative chunk size") == true)
         }
     }
 

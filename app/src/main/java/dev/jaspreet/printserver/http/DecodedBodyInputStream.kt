@@ -27,7 +27,7 @@ class DecodedBodyInputStream(
     private val maxBytes: Long = BodyReader.DEFAULT_MAX_BYTES,
 ) : InputStream() {
 
-    private val chunked = head.get("Transfer-Encoding")?.contains("chunked", ignoreCase = true) == true
+    private val framing = head.bodyFraming()
 
     // Content-Length path: how many more raw bytes belong to this body.
     private var contentLengthRemaining: Long = 0L
@@ -42,15 +42,20 @@ class DecodedBodyInputStream(
     private var finished: Boolean
 
     init {
-        if (chunked) {
-            finished = false
-        } else {
-            val length = head.get("Content-Length")?.trim()?.toLongOrNull() ?: 0L
-            if (length > maxBytes) {
-                throw BodyTooLargeException("Content-Length $length exceeds limit $maxBytes")
+        when (val mode = framing) {
+            HttpBodyFraming.Chunked -> {
+                finished = false
             }
-            contentLengthRemaining = length
-            finished = length == 0L
+            HttpBodyFraming.Empty -> {
+                finished = true
+            }
+            is HttpBodyFraming.ContentLength -> {
+                if (mode.length > maxBytes) {
+                    throw BodyTooLargeException("Content-Length ${mode.length} exceeds limit $maxBytes")
+                }
+                contentLengthRemaining = mode.length
+                finished = mode.length == 0L
+            }
         }
     }
 
@@ -64,7 +69,7 @@ class DecodedBodyInputStream(
         if (len == 0) return 0
         if (finished) return -1
         try {
-            return if (chunked) readChunked(b, off, len) else readContentLength(b, off, len)
+            return if (framing == HttpBodyFraming.Chunked) readChunked(b, off, len) else readContentLength(b, off, len)
         } catch (e: Exception) {
             // Once framing breaks (bad chunk header, short read, over cap), this stream's
             // notion of "where the next chunk header/byte starts" is no longer trustworthy —
@@ -113,6 +118,7 @@ class DecodedBodyInputStream(
         val sizeLine = HttpHead.readLine(from) ?: throw IOException("EOF at chunk size")
         val size = sizeLine.substringBefore(';').trim().toLongOrNull(16)
             ?: throw IOException("Bad chunk size: $sizeLine")
+        if (size < 0L) throw IOException("Negative chunk size: $sizeLine")
         if (size == 0L) {
             while (true) {
                 val line = HttpHead.readLine(from) ?: throw IOException("EOF in trailers")
@@ -121,8 +127,8 @@ class DecodedBodyInputStream(
         }
         // A chunked body has no advance total, so the limit is checked cumulatively
         // per chunk instead of up front the way Content-Length allows.
-        if (totalConsumed + size > maxBytes) {
-            throw BodyTooLargeException("Chunked body exceeded limit $maxBytes at ${totalConsumed + size} bytes")
+        if (size > maxBytes - totalConsumed) {
+            throw BodyTooLargeException("Chunked body exceeded limit $maxBytes")
         }
         chunkRemaining = size
         return true

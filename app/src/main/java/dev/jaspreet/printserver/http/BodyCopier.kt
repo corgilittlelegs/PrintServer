@@ -14,25 +14,13 @@ object BodyCopier {
     private val CRLF = "\r\n".toByteArray(Charsets.ISO_8859_1)
 
     fun copy(head: HttpHead, from: InputStream, to: OutputStream) {
-        val te = head.get("Transfer-Encoding")
-        val clValues = head.getAll("Content-Length")
-
-        if (clValues.isNotEmpty() && clValues.toSet().size > 1) {
-            throw IOException("Duplicate Content-Length headers with differing values: $clValues")
+        when (val framing = head.bodyFraming()) {
+            HttpBodyFraming.Chunked -> copyChunked(from, to)
+            HttpBodyFraming.Empty -> Unit
+            is HttpBodyFraming.ContentLength -> if (framing.length > 0) {
+                copyExact(from, to, framing.length)
+            }
         }
-        if (te != null && clValues.isNotEmpty()) {
-            throw IOException("Message has both Content-Length and Transfer-Encoding headers")
-        }
-        if (te != null && te.contains("chunked", ignoreCase = true)) {
-            copyChunked(from, to)
-            return
-        }
-        if (clValues.isEmpty()) return
-        val length = clValues[0].trim().toLongOrNull()
-        if (length == null || length < 0) {
-            throw IOException("Malformed Content-Length: ${clValues[0]}")
-        }
-        if (length > 0) copyExact(from, to, length)
     }
 
     private fun copyExact(from: InputStream, to: OutputStream, count: Long) {
@@ -49,9 +37,10 @@ object BodyCopier {
     private fun copyChunked(from: InputStream, to: OutputStream) {
         while (true) {
             val sizeLine = HttpHead.readLine(from) ?: throw IOException("EOF at chunk size")
-            to.write(sizeLine.toByteArray(Charsets.ISO_8859_1)); to.write(CRLF)
             val size = sizeLine.substringBefore(';').trim().toLongOrNull(16)
                 ?: throw IOException("Bad chunk size: $sizeLine")
+            if (size < 0L) throw IOException("Negative chunk size: $sizeLine")
+            to.write(sizeLine.toByteArray(Charsets.ISO_8859_1)); to.write(CRLF)
             if (size > 0) {
                 copyExact(from, to, size)
                 expectCrlf(from)

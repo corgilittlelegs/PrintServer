@@ -4,6 +4,7 @@ import android.util.Log
 import dev.jaspreet.printserver.render.RenderingPipeline
 import dev.jaspreet.printserver.usb.LegacyPrinterSession
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
@@ -118,15 +119,32 @@ class JobQueue(
             }
     }
 
+    /**
+     * Atomically claims a reserved Create-Job for the single Send-Document request that is
+     * allowed to write its bytes. This closes the replay/race window where two clients could
+     * both observe PENDING, append to the same spool file, then enqueue the same job twice.
+     */
+    fun beginSpooling(id: Int): PrintJob? {
+        val job = jobs[id] ?: return null
+        synchronized(job) {
+            if (job.state != JobState.PENDING) return null
+            job.state = JobState.SPOOLING
+            job.stateReason = "job-incoming"
+            return job
+        }
+    }
+
     /** Hands a job reserved via [reserve] to the worker now that its document is written. */
     fun enqueue(id: Int): Boolean {
         val job = jobs[id] ?: return false
         synchronized(job) {
-            if (job.state != JobState.PENDING) return false
+            if (job.state != JobState.SPOOLING) return false
             // The caller (LocalIppServer.sendDocument) has just finished streaming the
             // document into job.spoolFile — capture the final size now, durably, while the
             // file is guaranteed to still exist and reflect the complete document.
             job.spooledBytes = job.spoolFile.length()
+            job.state = JobState.PENDING
+            job.stateReason = "none"
             pending.put(job)
             return true
         }
@@ -136,7 +154,7 @@ class JobQueue(
 
     /** Snapshot of jobs not yet completed/aborted/canceled — for IPP Get-Jobs. */
     fun listActive(): List<PrintJob> = jobs.values.filter {
-        it.state == JobState.PENDING || it.state == JobState.PROCESSING
+        it.state == JobState.PENDING || it.state == JobState.SPOOLING || it.state == JobState.PROCESSING
     }
 
     /** True if the job was still pending and is now canceled. */
@@ -155,7 +173,7 @@ class JobQueue(
     }
 
     /**
-     * Finalizes a still-PENDING job as ABORTED with [reason] without ever handing it to the
+     * Finalizes a still-PENDING/SPOOLING job as ABORTED with [reason] without ever handing it to the
      * worker — for a two-phase (Create-Job/Send-Document) job whose document delivery fails
      * before it's enqueued (e.g. Send-Document's body exceeds the size cap). Mirrors [cancel]'s
      * shape, but sets [PrintJob.stateReason] and fires [onJobFinished] too, since this is a
@@ -163,12 +181,12 @@ class JobQueue(
      *
      * The caller is responsible for the spool file's contents (e.g. [LocalIppServer]'s
      * streamToFile already truncates a failed append back to its pre-call length); this only
-     * updates job state. Returns false if [id] is unknown or the job already left PENDING.
+     * updates job state. Returns false if [id] is unknown or the job already left PENDING/SPOOLING.
      */
     fun fail(id: Int, reason: String): Boolean {
         val job = jobs[id] ?: return false
         val failed = synchronized(job) {
-            if (job.state != JobState.PENDING) return false
+            if (job.state != JobState.PENDING && job.state != JobState.SPOOLING) return false
             job.state = JobState.ABORTED
             job.stateReason = reason
             true
@@ -215,9 +233,10 @@ class JobQueue(
             job.state = JobState.PROCESSING
         }
         onJobStateChanged(job)
-        val rendered = File(job.spoolFile.parentFile!!, "${job.spoolFile.name}.out")
+        val spoolParent = job.spoolFile.parentFile ?: throw IOException("Spool file has no parent directory")
+        val rendered = File(spoolParent, "${job.spoolFile.name}.out")
         try {
-            checkFreeSpace(job.spoolFile.parentFile)
+            checkFreeSpace(spoolParent)
             val future = renderExecutor.submit { pipeline.render(job.spoolFile, rendered, job.format, job.quality, job.colorMode) }
             try {
                 future.get(renderTimeoutMs, TimeUnit.MILLISECONDS)

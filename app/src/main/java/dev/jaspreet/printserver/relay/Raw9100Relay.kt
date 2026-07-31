@@ -18,6 +18,8 @@ class Raw9100Relay(
     /** Shared with JobQueue so a raw client's writes can never interleave with an
      *  in-progress Tier 2 rendered print job's writes — see [LegacyPrinterSession]. */
     private val legacySession: LegacyPrinterSession,
+    private val maxSessionMs: Long = DEFAULT_MAX_SESSION_MS,
+    private val maxSessionBytes: Long = DEFAULT_MAX_SESSION_BYTES,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var currentClient: Socket? = null
@@ -38,12 +40,6 @@ class Raw9100Relay(
 
     private fun handle(client: Socket) {
         currentClient = client
-        // Note: soTimeout resets on every byte received, so a slow-but-still-trickling raw
-        // client can hold legacySession's lock for far longer than DEFAULT_TIMEOUT_MS — during
-        // that window, scan requests will fail with "printer busy" even though nothing is
-        // printing quickly. Acceptable for now (a print job is still making progress; the
-        // client will eventually finish or time out), but there's no independent cap on total
-        // lock-hold duration here the way there is for the (bounded-wait) scan/raw side.
         client.soTimeout = 60_000
         // Acquired once for the whole connection (not per chunk): a raw-9100 session is one
         // logical print stream from the printer's point of view, so once it wins the lock it
@@ -54,10 +50,21 @@ class Raw9100Relay(
         val result = legacySession.tryWriteExclusive("raw-9100 client (${client.inetAddress?.hostAddress})") { transport ->
             val buf = ByteArray(65536)
             val input = client.getInputStream()
+            val startedAt = System.currentTimeMillis()
+            var totalBytes = 0L
             try {
                 while (true) {
+                    if (System.currentTimeMillis() - startedAt > maxSessionMs) {
+                        Log.w(TAG, "raw 9100 client exceeded ${maxSessionMs}ms session cap, closing")
+                        break
+                    }
                     val n = input.read(buf)
                     if (n < 0) break
+                    totalBytes += n
+                    if (totalBytes > maxSessionBytes) {
+                        Log.w(TAG, "raw 9100 client exceeded ${maxSessionBytes} byte session cap, closing")
+                        break
+                    }
                     transport.write(buf, 0, n)
                 }
             } catch (_: IOException) {
@@ -82,5 +89,7 @@ class Raw9100Relay(
 
     companion object {
         private const val TAG = "Raw9100Relay"
+        private const val DEFAULT_MAX_SESSION_MS = 10L * 60L * 1000L
+        private const val DEFAULT_MAX_SESSION_BYTES = 200L * 1_000_000L
     }
 }

@@ -244,15 +244,18 @@ class LocalIppServer(
             ?: return errorResponse(request.requestId, Status.clientErrorBadRequest)
         val job = jobQueue.get(jobId)
             ?: return errorResponse(request.requestId, Status.clientErrorNotFound)
-        // Job must still be PENDING (reserved via Create-Job, not yet handed to the
-        // worker) — once it's PROCESSING/COMPLETED/etc its spool file is owned by the
-        // worker (and may already be deleted), so appending here would either race the
-        // worker or silently resurrect a deleted file with no size bound.
-        if (job.state != JobState.PENDING) {
+        // The first Send-Document claims the reserved job before any bytes are read. A
+        // duplicate/replayed request now fails while the first one is still spooling instead
+        // of appending to the same file or enqueueing the same job twice.
+        if (jobQueue.beginSpooling(jobId) == null) {
             return errorResponse(request.requestId, Status.clientErrorNotPossible)
         }
         try {
-            streamToFile(input, job.spoolFile, append = true)
+            val written = streamToFile(input, job.spoolFile, append = true)
+            if (written == 0L) {
+                jobQueue.fail(jobId, "empty-document")
+                return errorResponse(request.requestId, Status.clientErrorBadRequest)
+            }
         } catch (e: BodyTooLargeException) {
             // streamToFile already truncated job.spoolFile back to its pre-call (empty)
             // length — but the job itself would otherwise stay PENDING forever: never
@@ -262,6 +265,9 @@ class LocalIppServer(
             // distinctly from render/document-format failures, before the caller (handleClient)
             // turns this exception into the client-facing 413 response.
             jobQueue.fail(jobId, "request-entity-too-large")
+            throw e
+        } catch (e: IOException) {
+            jobQueue.fail(jobId, "document-receive-error")
             throw e
         }
         // We don't support multi-document jobs, so treat every Send-Document as final
@@ -434,6 +440,7 @@ class LocalIppServer(
 
     private fun ippState(state: JobState): IppJobState = when (state) {
         JobState.PENDING -> IppJobState.pending
+        JobState.SPOOLING -> IppJobState.pending
         JobState.PROCESSING -> IppJobState.processing
         JobState.COMPLETED -> IppJobState.completed
         JobState.ABORTED -> IppJobState.aborted

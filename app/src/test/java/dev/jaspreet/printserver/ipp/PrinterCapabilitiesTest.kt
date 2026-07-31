@@ -19,10 +19,10 @@ class PrinterCapabilitiesTest {
     )
 
     @Test
-    fun `advertises pdf as the default with pwg raster and jpeg also supported`() {
+    fun `advertises pdf as the default with jpeg also supported`() {
         val group = caps.asPrinterAttributes()
         assertEquals(
-            listOf("application/pdf", "image/pwg-raster", "image/jpeg"),
+            listOf("application/pdf", "image/jpeg"),
             group.getValues(Types.documentFormatSupported),
         )
         assertEquals("application/pdf", group.getValue(Types.documentFormatDefault))
@@ -40,10 +40,10 @@ class PrinterCapabilitiesTest {
     @Test
     fun `printer info feeds txt records`() {
         val info = caps.toPrinterInfo()
-        assertEquals(listOf("application/pdf", "image/pwg-raster", "image/jpeg"), info.formats)
+        assertEquals(listOf("application/pdf", "image/jpeg"), info.formats)
         assertTrue(info.color)
         val txt = TxtRecords.forIpp(info)
-        assertEquals("application/pdf,image/pwg-raster,image/jpeg", txt["pdl"])
+        assertEquals("application/pdf,image/jpeg", txt["pdl"])
     }
 
     @Test

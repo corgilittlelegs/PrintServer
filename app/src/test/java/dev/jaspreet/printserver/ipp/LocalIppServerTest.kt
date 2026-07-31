@@ -89,12 +89,12 @@ class LocalIppServerTest {
     )
 
     @Test
-    fun `answers get-printer-attributes with driverless raster support`() {
+    fun `answers get-printer-attributes with pdf and jpeg support`() {
         val port = start()
         val resp = ipp(port, IppPacket(Operation.getPrinterAttributes, 1, operationGroup()))
         assertEquals(Status.successfulOk, resp.status)
         val formats = resp[Tag.printerAttributes]!!.getValues(Types.documentFormatSupported)
-        assertEquals(listOf("application/pdf", "image/pwg-raster", "image/jpeg"), formats)
+        assertEquals(listOf("application/pdf", "image/jpeg"), formats)
     }
 
     @Test
@@ -112,7 +112,7 @@ class LocalIppServerTest {
     }
 
     @Test
-    fun `print-job preserves pwg raster document format for renderer`() {
+    fun `print-job rejects pwg raster until native raster validation exists`() {
         val port = start()
         val request = IppPacket(
             Operation.printJob, 22,
@@ -125,11 +125,8 @@ class LocalIppServerTest {
             ),
         )
         val resp = ipp(port, request, "RaS2 fake raster".toByteArray())
-        assertEquals(Status.successfulOk, resp.status)
-        val jobId = resp[Tag.jobAttributes]!!.getValue(Types.jobId)!!
-        val job = queue!!.get(jobId)!!
-        assertEquals("image/pwg-raster", job.format)
-        assertEquals("pwg", job.spoolFile.extension)
+        assertEquals(Status.clientErrorDocumentFormatNotSupported, resp.status)
+        assertEquals(null, resp[Tag.jobAttributes]?.getValue(Types.jobId))
     }
 
     @Test
@@ -612,6 +609,31 @@ class LocalIppServerTest {
 
         val spooled = pipeline.captured.get(10, TimeUnit.SECONDS)
         assertArrayEquals(document, spooled)
+    }
+
+    @Test
+    fun `send-document rejects an empty final document and aborts the reserved job`() {
+        val port = start()
+        val createResp = ipp(port, IppPacket(Operation.createJob, 67, operationGroup()))
+        val jobId = createResp[Tag.jobAttributes]!!.getValue(Types.jobId)!!
+
+        val sendRequest = IppPacket(
+            Operation.sendDocument, 68,
+            groupOf(
+                Tag.operationAttributes,
+                Types.attributesCharset.of("utf-8"),
+                Types.attributesNaturalLanguage.of("en"),
+                Types.printerUri.of(URI.create("ipp://127.0.0.1/ipp/print")),
+                Types.jobId.of(jobId),
+            ),
+        )
+
+        val sendResp = ipp(port, sendRequest, ByteArray(0))
+
+        assertEquals(Status.clientErrorBadRequest, sendResp.status)
+        val job = queue!!.get(jobId)!!
+        assertEquals(dev.jaspreet.printserver.jobs.JobState.ABORTED, job.state)
+        assertEquals("empty-document", job.stateReason)
     }
 
     @Test

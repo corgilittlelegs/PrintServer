@@ -24,7 +24,10 @@ object VerifiedPrinterProfiles {
             "hp deskjet 2300 all-in-one",
             "hp deskjet ink advantage 2300 all-in-one",
         ),
-        documentFormatsSupported = listOf("application/pdf", "image/pwg-raster", "image/jpeg"),
+        // PWG raster used to be advertised here, but it sends untrusted LAN input directly into
+        // the bundled CUPS/hpcups raster path. Keep it disabled until that native path has
+        // strict header validation, dependency updates, and fuzz coverage.
+        documentFormatsSupported = listOf("application/pdf", "image/jpeg"),
         mediaSupported = listOf("iso_a4_210x297mm", "na_letter_8.5x11in"),
         mediaDefault = "iso_a4_210x297mm",
         colorModesSupported = listOf("color", "monochrome"),

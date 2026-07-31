@@ -64,9 +64,23 @@ class BodyCopierTest {
     }
 
     @Test
-    fun `duplicate content-length with differing values throws`() {
+    fun `duplicate content-length throws even when values match`() {
         assertThrows(IOException::class.java) {
-            copy(head("Content-Length" to "5", "Content-Length" to "10"), "hello")
+            copy(head("Content-Length" to "5", "Content-Length" to "5"), "hello")
+        }
+    }
+
+    @Test
+    fun `transfer-encoding substring match throws`() {
+        assertThrows(IOException::class.java) {
+            copy(head("Transfer-Encoding" to "xchunked"), "0\r\n\r\n")
+        }
+    }
+
+    @Test
+    fun `negative chunk size throws`() {
+        assertThrows(IOException::class.java) {
+            copy(head("Transfer-Encoding" to "chunked"), "-1\r\n\r\n")
         }
     }
 }

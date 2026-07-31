@@ -9,6 +9,7 @@ class JobStateMappingTest {
     @Test
     fun `pending and processing map to printing`() {
         assertEquals(ActivityStatus.PRINTING, JobState.PENDING.toActivityStatus())
+        assertEquals(ActivityStatus.PRINTING, JobState.SPOOLING.toActivityStatus())
         assertEquals(ActivityStatus.PRINTING, JobState.PROCESSING.toActivityStatus())
     }
 

@@ -477,9 +477,17 @@ fun PrintServerApp(
                                     
                                     Spacer(modifier = Modifier.width(12.dp))
                                     
+                                    val dashboardPrinterName = when (status.tier) {
+                                        2 -> status.profileName
+                                            ?: listOfNotNull(status.manufacturer, status.model).joinToString(" ").ifBlank { null }
+                                            ?: status.printerName
+                                            ?: "Unknown Printer"
+                                        else -> status.printerName ?: "Unknown Printer"
+                                    }
+
                                     Column {
                                         Text(
-                                            text = "Printer: ${status.printerName ?: "Unknown Printer"}",
+                                            text = "Printer: $dashboardPrinterName",
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 15.sp,
                                             color = MaterialTheme.colorScheme.onSurface
@@ -604,6 +612,7 @@ fun PrintServerApp(
                                         2 -> "Tier 2 (On-Device Rendering)"
                                         else -> "N/A"
                                     },
+                                    "Network Name" to (status.printerName ?: "N/A"),
                                     "Manufacturer" to (status.manufacturer ?: "N/A"),
                                     "Model" to (status.model ?: "N/A"),
                                     "Verified Profile" to (status.profileName ?: "N/A"),

@@ -475,6 +475,8 @@ class JobQueueTest {
         assertEquals(0L, q.get(id)!!.spooledBytes)
 
         // Simulate Send-Document writing the document body onto the reserved spool file.
+        assertNotNull(q.beginSpooling(id))
+        assertEquals(JobState.SPOOLING, q.get(id)!!.state)
         spool.writeText("%PDF-two-phase-doc")
         val expectedSize = spool.length()
         assertTrue(q.enqueue(id))
@@ -487,6 +489,35 @@ class JobQueueTest {
             expectedSize,
             q.get(id)!!.spooledBytes,
         )
+    }
+
+    @Test
+    fun `beginSpooling claims a reserved job exactly once before enqueue`() {
+        val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } })
+        queue = q
+        val spool = File.createTempFile("job", ".pdf").also { tempFiles += it }
+        val id = q.reserve(spool, "two-phase-doc")
+
+        val claimed = q.beginSpooling(id)
+
+        assertNotNull(claimed)
+        assertEquals(JobState.SPOOLING, q.get(id)!!.state)
+        assertNull("a duplicate Send-Document must not claim the same spool file", q.beginSpooling(id))
+        assertFalse("enqueue should fail for an unknown job", q.enqueue(999))
+    }
+
+    @Test
+    fun `enqueue is rejected until a reserved job has been claimed for spooling`() {
+        val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } })
+        queue = q
+        val spool = File.createTempFile("job", ".pdf").also { tempFiles += it }
+        val id = q.reserve(spool, "two-phase-doc")
+
+        spool.writeText("%PDF-two-phase-doc")
+
+        assertFalse(q.enqueue(id))
+        assertEquals(JobState.PENDING, q.get(id)!!.state)
+        assertEquals(0L, q.get(id)!!.spooledBytes)
     }
 
     @Test
@@ -512,6 +543,28 @@ class JobQueueTest {
         assertTrue("onJobFinished must fire for a fail()-ed job", finished.await(5, TimeUnit.SECONDS))
         assertTrue(stateChanges.contains(JobState.ABORTED))
         // Never handed to the worker — pipeline.render() must not run for a failed job.
+        assertFalse(q.listActive().contains(job))
+    }
+
+    @Test
+    fun `fail transitions a SPOOLING job to ABORTED with the given reason`() {
+        val finished = CountDownLatch(1)
+        val q = JobQueue(
+            FakeRenderingPipeline("PCL!".toByteArray()),
+            LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
+            onJobFinished = { finished.countDown() },
+        )
+        queue = q
+        val spool = File.createTempFile("job", ".pdf").also { tempFiles += it }
+        val id = q.reserve(spool, "two-phase-doc")
+        assertNotNull(q.beginSpooling(id))
+
+        assertTrue(q.fail(id, "request-entity-too-large"))
+
+        val job = q.get(id)!!
+        assertEquals(JobState.ABORTED, job.state)
+        assertEquals("request-entity-too-large", job.stateReason)
+        assertTrue(finished.await(5, TimeUnit.SECONDS))
         assertFalse(q.listActive().contains(job))
     }
 

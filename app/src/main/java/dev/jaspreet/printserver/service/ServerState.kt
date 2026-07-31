@@ -7,6 +7,7 @@ import dev.jaspreet.printserver.scan.SupplyStatus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 enum class ScanState {
     UNAVAILABLE,
@@ -53,5 +54,5 @@ data class ServerStatus(
 object ServerState {
     private val _status = MutableStateFlow(ServerStatus())
     val status: StateFlow<ServerStatus> = _status.asStateFlow()
-    fun update(transform: (ServerStatus) -> ServerStatus) { _status.value = transform(_status.value) }
+    fun update(transform: (ServerStatus) -> ServerStatus) { _status.update(transform) }
 }

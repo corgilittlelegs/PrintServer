@@ -32,11 +32,13 @@ class LocalEsclServerTest {
         },
         defaultToneSettings: () -> ScanToneSettings = { ScanToneSettings() },
         nextDocumentPollDelayMs: Long = 250,
+        maxRequestBodyBytes: Long = 64L * 1024L,
     ): Int {
         spoolDir = createTempDir()
         val s = LocalEsclServer(
             port = 0, makeAndModel = "PrintServer Scanner", capabilities = capabilities,
             spoolDir = spoolDir, performScan = onScan, defaultToneSettings = defaultToneSettings,
+            maxRequestBodyBytes = maxRequestBodyBytes,
             nextDocumentPollDelayMs = nextDocumentPollDelayMs,
         )
         s.start(bindAddress = null)
@@ -154,6 +156,23 @@ class LocalEsclServerTest {
         assertTrue("scan should complete", done.await(5, TimeUnit.SECONDS))
         assertEquals(1150, capturedBrightness)
         assertEquals(850, capturedContrast)
+    }
+
+    @Test
+    fun `POST ScanJobs rejects oversized request bodies without starting a scan`() {
+        val scanStarted = AtomicBoolean(false)
+        val port = start(
+            maxRequestBodyBytes = 16,
+            onScan = { _, _, _, _, output ->
+                scanStarted.set(true)
+                output.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte()))
+            },
+        )
+
+        val (status, _) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+
+        assertEquals(413, status)
+        assertFalse(scanStarted.get())
     }
 
     @Test

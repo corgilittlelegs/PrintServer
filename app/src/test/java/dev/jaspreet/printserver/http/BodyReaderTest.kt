@@ -3,6 +3,7 @@ package dev.jaspreet.printserver.http
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import java.io.IOException
 
 class BodyReaderTest {
 
@@ -22,6 +23,38 @@ class BodyReaderTest {
         val input = ByteArrayInputStream(chunked.toByteArray(Charsets.ISO_8859_1))
         val body = BodyReader.readAll(head("Transfer-Encoding" to "chunked"), input)
         assertEquals("Wikipedia", String(body))
+    }
+
+    @Test(expected = IOException::class)
+    fun `rejects transfer-encoding substring matches`() {
+        BodyReader.readAll(
+            head("Transfer-Encoding" to "xchunked"),
+            ByteArrayInputStream("0\r\n\r\n".toByteArray(Charsets.ISO_8859_1)),
+        )
+    }
+
+    @Test(expected = IOException::class)
+    fun `rejects content-length with transfer-encoding`() {
+        BodyReader.readAll(
+            head("Content-Length" to "5", "Transfer-Encoding" to "chunked"),
+            ByteArrayInputStream("0\r\n\r\n".toByteArray(Charsets.ISO_8859_1)),
+        )
+    }
+
+    @Test(expected = IOException::class)
+    fun `rejects duplicate content-length`() {
+        BodyReader.readAll(
+            head("Content-Length" to "5", "Content-Length" to "5"),
+            ByteArrayInputStream("hello".toByteArray()),
+        )
+    }
+
+    @Test(expected = IOException::class)
+    fun `rejects negative content-length`() {
+        BodyReader.readAll(
+            head("Content-Length" to "-5"),
+            ByteArrayInputStream("hello".toByteArray()),
+        )
     }
 
     @Test
@@ -48,6 +81,14 @@ class BodyReaderTest {
             head("Transfer-Encoding" to "chunked"),
             ByteArrayInputStream(chunked.toByteArray(Charsets.ISO_8859_1)),
             maxBytes = 1024,
+        )
+    }
+
+    @Test(expected = IOException::class)
+    fun `rejects negative chunk size`() {
+        BodyReader.readAll(
+            head("Transfer-Encoding" to "chunked"),
+            ByteArrayInputStream("-1\r\n\r\n".toByteArray(Charsets.ISO_8859_1)),
         )
     }
 }

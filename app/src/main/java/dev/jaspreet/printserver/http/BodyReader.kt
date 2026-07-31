@@ -15,15 +15,15 @@ object BodyReader {
 
     fun readAll(head: HttpHead, from: InputStream, maxBytes: Long = DEFAULT_MAX_BYTES): ByteArray {
         val out = ByteArrayOutputStream()
-        val te = head.get("Transfer-Encoding")
-        if (te != null && te.contains("chunked", ignoreCase = true)) {
-            readChunked(from, out, maxBytes)
-        } else {
-            val length = head.get("Content-Length")?.trim()?.toLongOrNull() ?: 0L
-            if (length > maxBytes) {
-                throw BodyTooLargeException("Content-Length $length exceeds limit $maxBytes")
+        when (val framing = head.bodyFraming()) {
+            HttpBodyFraming.Chunked -> readChunked(from, out, maxBytes)
+            HttpBodyFraming.Empty -> Unit
+            is HttpBodyFraming.ContentLength -> {
+                if (framing.length > maxBytes) {
+                    throw BodyTooLargeException("Content-Length ${framing.length} exceeds limit $maxBytes")
+                }
+                copyExact(from, out, framing.length)
             }
-            copyExact(from, out, length)
         }
         return out.toByteArray()
     }
@@ -45,18 +45,19 @@ object BodyReader {
             val sizeLine = HttpHead.readLine(from) ?: throw IOException("EOF at chunk size")
             val size = sizeLine.substringBefore(';').trim().toLongOrNull(16)
                 ?: throw IOException("Bad chunk size: $sizeLine")
+            if (size < 0L) throw IOException("Negative chunk size: $sizeLine")
             if (size == 0L) {
                 while (true) {
                     val line = HttpHead.readLine(from) ?: throw IOException("EOF in trailers")
                     if (line.isEmpty()) return
                 }
             }
-            total += size
             // A chunked body has no advance total, so the limit is checked cumulatively
             // per chunk instead of up front the way Content-Length allows.
-            if (total > maxBytes) {
-                throw BodyTooLargeException("Chunked body exceeded limit $maxBytes at $total bytes")
+            if (size > maxBytes - total) {
+                throw BodyTooLargeException("Chunked body exceeded limit $maxBytes")
             }
+            total += size
             copyExact(from, to, size)
             val cr = from.read(); val lf = from.read()
             if (cr != '\r'.code || lf != '\n'.code) throw IOException("Missing CRLF after chunk")

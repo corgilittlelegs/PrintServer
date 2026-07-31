@@ -9,6 +9,7 @@ import org.junit.Test
 import java.net.Socket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class Raw9100RelayTest {
 
@@ -111,5 +112,44 @@ class Raw9100RelayTest {
 
         // The rejected raw client's bytes must never have reached the printer.
         assertEquals("", String(printer.lastRequest()))
+    }
+
+    @Test
+    fun `slow raw client is closed after the total session time cap`() {
+        val printer = FakePrinterTransport { ByteArray(0) }
+        val r = Raw9100Relay(
+            port = 0,
+            legacySession = LegacyPrinterSession { printer },
+            maxSessionMs = 200,
+        )
+        r.start(bindAddress = null)
+        relay = r
+
+        val writeFailed = AtomicBoolean(false)
+        Socket("127.0.0.1", r.actualPort).use { socket ->
+            socket.soTimeout = 2_000
+            val writer = Thread {
+                try {
+                    repeat(20) {
+                        socket.getOutputStream().write('x'.code)
+                        socket.getOutputStream().flush()
+                        Thread.sleep(75)
+                    }
+                } catch (_: Exception) {
+                    writeFailed.set(true)
+                }
+            }
+            writer.start()
+
+            val observedClose = try {
+                socket.getInputStream().read() == -1
+            } catch (_: java.net.SocketException) {
+                true
+            }
+
+            writer.join(2_000)
+            assertTrue("expected the relay to close/reset the capped raw session", observedClose || writeFailed.get())
+            assertTrue("expected only a prefix of the slow stream to reach the printer", printer.lastRequest().size < 20)
+        }
     }
 }

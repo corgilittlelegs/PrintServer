@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 data class QueueEntry(
     val id: Int,
     val name: String,
-    val state: JobState,          // PENDING or PROCESSING only — listActive() never returns others
+    val state: JobState,          // PENDING, SPOOLING, or PROCESSING — listActive() never returns terminal jobs
     val submittedAtMs: Long,
     val sizeBytes: Long,
     val position: Int?,           // 1-based rank among PENDING jobs; null for PROCESSING
