@@ -27,6 +27,7 @@ class ScanPipeline(
     private val host: String = "localhost",
     private val pollDelayMs: Long = 500,
     private val maxPolls: Int? = null,
+    private val maxScanBytes: Long = 64L * 1024L * 1024L,
     private val onProgress: (ScanProgressPhase) -> Unit = {},
 ) {
     companion object {
@@ -90,7 +91,7 @@ class ScanPipeline(
         withTransport { transport ->
             val reader = send(transport, LedmRequests.getResourceRequest(binaryUrl, host))
             ChunkedHttp.readHeader(reader)
-            output.writeBytes(ChunkedHttp.readChunkedBody(reader))
+            output.writeBytes(ChunkedHttp.readChunkedBody(reader, maxScanBytes))
         }
         onProgress(ScanProgressPhase.READY)
     }

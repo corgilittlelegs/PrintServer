@@ -20,6 +20,7 @@ class NativeRenderingPipeline(
      *  logs only (not part of the render path itself). Optional/defaulted so existing
      *  callers/tests that don't have a profile in scope don't need to change. */
     private val profileId: String? = null,
+    private val limits: RenderingLimits = RenderingLimits(),
 ) : RenderingPipeline {
 
     companion object {
@@ -27,8 +28,6 @@ class NativeRenderingPipeline(
 
         // Bounds a decoded JPEG's memory footprint (ARGB_8888 bitmap + RGB copies below);
         // 50 megapixels is well beyond any realistic printed page at this pipeline's max dpi.
-        private const val MAX_JPEG_PIXELS = 50_000_000L
-
         // FastDraft/Normal/Best all live in the bundled PPD; Best differs from Normal only
         // via the OutputMode option string below, not resolution — both render at 600dpi.
         // Photo(1200dpi) has no reachable IPP print-quality mapping (see PrintOptions.kt).
@@ -65,8 +64,15 @@ class NativeRenderingPipeline(
         raster: File, output: File, options: String,
         format: String, quality: PrintQuality, colorMode: ColorMode,
     ) {
-        val code = HpcupsNative.encodeRasterGuarded(raster.absolutePath, ppdPath, output.absolutePath, options)
+        val code = HpcupsNative.encodeRasterGuarded(
+            raster.absolutePath,
+            ppdPath,
+            output.absolutePath,
+            options,
+            limits,
+        )
         checkResult(code, format, quality, colorMode)
+        checkEncodedSize(output.length())
     }
 
     private fun renderJpeg(
@@ -79,7 +85,7 @@ class NativeRenderingPipeline(
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(jpeg.absolutePath, bounds)
         val declaredPixels = bounds.outWidth.toLong() * bounds.outHeight.toLong()
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || declaredPixels > MAX_JPEG_PIXELS) {
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || declaredPixels > limits.maxPixelsPerPage) {
             throw IOException("JPEG dimensions ${bounds.outWidth}x${bounds.outHeight} exceed limit")
         }
         val bitmap = BitmapFactory.decodeFile(jpeg.absolutePath)
@@ -100,6 +106,7 @@ class NativeRenderingPipeline(
             }
             val code = HpcupsNative.encodeGuarded(rgb, width, height, dpi, ppdPath, output.absolutePath, options)
             checkResult(code, format, quality, colorMode)
+            checkEncodedSize(output.length())
         } finally {
             bitmap.recycle()
         }
@@ -112,24 +119,37 @@ class NativeRenderingPipeline(
         val pageDir = File(workDir, "pages-${System.nanoTime()}").apply { mkdirs() }
         try {
             val pattern = File(pageDir, "page-%03d.ppm")
-            GhostscriptRenderer(dpi).renderToPpm(pdf, pattern)
+            GhostscriptRenderer(dpi, limits.maxPages).renderToPpm(pdf, pattern)
             val pages = pageDir.listFiles { f -> f.name.endsWith(".ppm") }?.sortedBy { it.name }
                 ?: emptyList()
             if (pages.isEmpty()) throw IOException("Ghostscript produced no pages")
+            validateRenderedPages(pages, limits)
 
             output.outputStream().use { out ->
+                var encodedBytes = 0L
                 for (page in pages) {
-                    val img = page.inputStream().buffered().use { PpmImage.parse(it) }
+                    val img = page.inputStream().buffered().use { PpmImage.parse(it, limits.maxPixelsPerPage) }
                     val pageOut = File(pageDir, "${page.name}.pcl")
                     val code = HpcupsNative.encodeGuarded(
                         img.rgb, img.width, img.height, dpi, ppdPath, pageOut.absolutePath, options,
                     )
                     checkResult(code, format, quality, colorMode, page = page.name)
+                    val pageBytes = pageOut.length()
+                    if (pageBytes > limits.maxEncodedBytes - encodedBytes) {
+                        throw IOException("Encoded renderer output exceeds ${limits.maxEncodedBytes} bytes")
+                    }
+                    encodedBytes += pageBytes
                     pageOut.inputStream().use { it.copyTo(out) }
                 }
             }
         } finally {
             pageDir.deleteRecursively()
+        }
+    }
+
+    private fun checkEncodedSize(bytes: Long) {
+        if (bytes > limits.maxEncodedBytes) {
+            throw IOException("Encoded renderer output exceeds ${limits.maxEncodedBytes} bytes")
         }
     }
 

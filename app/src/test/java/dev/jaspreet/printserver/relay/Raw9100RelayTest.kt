@@ -1,5 +1,7 @@
 package dev.jaspreet.printserver.relay
 
+import dev.jaspreet.printserver.access.ClientAccessGate
+import dev.jaspreet.printserver.access.NetworkService
 import dev.jaspreet.printserver.usb.FakePrinterTransport
 import dev.jaspreet.printserver.usb.LegacyPrinterSession
 import org.junit.After
@@ -32,6 +34,35 @@ class Raw9100RelayTest {
             Thread.sleep(300)
         }
         assertEquals("RAW PCL BYTES", String(printer.lastRequest()))
+    }
+
+    @Test
+    fun `restricted raw client is closed before bytes reach the printer`() {
+        val printer = FakePrinterTransport { ByteArray(0) }
+        var observedService: NetworkService? = null
+        val r = Raw9100Relay(
+            port = 0,
+            legacySession = LegacyPrinterSession { printer },
+            clientAccessGate = ClientAccessGate { _, service ->
+                observedService = service
+                false
+            },
+        )
+        r.start(bindAddress = null)
+        relay = r
+
+        Socket("127.0.0.1", r.actualPort).use { socket ->
+            socket.soTimeout = 2_000
+            val closed = try {
+                socket.getOutputStream().write("BLOCKED".toByteArray())
+                socket.getInputStream().read() == -1
+            } catch (_: java.net.SocketException) {
+                true
+            }
+            assertTrue("expected blocked raw connection to close", closed)
+        }
+        assertEquals(NetworkService.RAW_PRINT, observedService)
+        assertEquals(0, printer.lastRequest().size)
     }
 
     @Test

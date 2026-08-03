@@ -1,6 +1,7 @@
 package dev.jaspreet.printserver.jobs
 
 import dev.jaspreet.printserver.render.FakeRenderingPipeline
+import dev.jaspreet.printserver.render.RecoverableRenderingPipeline
 import dev.jaspreet.printserver.usb.FakePrinterTransport
 import dev.jaspreet.printserver.usb.LegacyPrinterSession
 import dev.jaspreet.printserver.usb.UsbTransport
@@ -16,6 +17,7 @@ import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 class JobQueueTest {
 
@@ -89,6 +91,62 @@ class JobQueueTest {
         val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } }) {}
         queue = q
         assertNull(q.get(999))
+    }
+
+    @Test(expected = JobQueueCapacityException::class)
+    fun `active job quota rejects additional reservations`() {
+        val q = JobQueue(
+            FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
+            maxActiveJobs = 2,
+        )
+        queue = q
+        q.reserve(pdf(), "one", clientAddress = "10.0.0.1")
+        q.reserve(pdf(), "two", clientAddress = "10.0.0.2")
+        q.reserve(pdf(), "three", clientAddress = "10.0.0.3")
+    }
+
+    @Test(expected = JobQueueCapacityException::class)
+    fun `per-client reservation quota prevents one client consuming every slot`() {
+        val q = JobQueue(
+            FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
+            maxReservedJobsPerClient = 1,
+        )
+        queue = q
+        q.reserve(pdf(), "one", clientAddress = "10.0.0.1")
+        q.reserve(pdf(), "two", clientAddress = "10.0.0.1")
+    }
+
+    @Test
+    fun `expired reservation is aborted deleted and releases capacity`() {
+        val now = AtomicLong(1_000L)
+        val q = JobQueue(
+            FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } },
+            maxActiveJobs = 1, reservationTtlMs = 100, clockMs = { now.get() },
+        )
+        queue = q
+        val spool = pdf()
+        val expiredId = q.reserve(spool, "abandoned", clientAddress = "10.0.0.1")
+        now.set(1_101L)
+
+        val replacementId = q.reserve(pdf(), "replacement", clientAddress = "10.0.0.2")
+
+        assertEquals(JobState.ABORTED, q.get(expiredId)!!.state)
+        assertEquals("job-reservation-expired", q.get(expiredId)!!.stateReason)
+        assertFalse(spool.exists())
+        assertNotNull(q.get(replacementId))
+    }
+
+    @Test
+    fun `owned queue operations reject a different client address`() {
+        val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } })
+        queue = q
+        val id = q.reserve(pdf(), "private", clientAddress = "10.0.0.1")
+
+        assertNull(q.getOwned(id, "10.0.0.2"))
+        assertNull(q.beginSpoolingOwned(id, "10.0.0.2"))
+        assertFalse(q.cancelOwned(id, "10.0.0.2"))
+        assertEquals(listOf(id), q.listActiveForClient("10.0.0.1").map { it.id })
+        assertTrue(q.listActiveForClient("10.0.0.2").isEmpty())
     }
 
     @Test
@@ -224,6 +282,64 @@ class JobQueueTest {
         assertEquals("pipeline.render() must not run a second time", 1, invocations.get())
 
         releaseFirst.countDown() // let the original hung render finish so its thread doesn't leak past the test
+    }
+
+    @Test
+    fun `verified renderer recovery keeps queue usable after timeout`() {
+        val invocations = java.util.concurrent.atomic.AtomicInteger(0)
+        val recoveryCalls = java.util.concurrent.atomic.AtomicInteger(0)
+        val firstEntered = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val pipeline = object : RecoverableRenderingPipeline {
+            override fun render(
+                document: File, output: File, format: String,
+                quality: PrintQuality, colorMode: ColorMode,
+            ) {
+                if (invocations.incrementAndGet() == 1) {
+                    firstEntered.countDown()
+                    while (!releaseFirst.await(50, TimeUnit.MILLISECONDS)) {
+                        // Model a native/Binder call that ignores thread interruption.
+                    }
+                    throw IOException("renderer was terminated")
+                }
+                output.writeText("PCL-after-recovery")
+            }
+
+            override fun recoverFromTimeout(): Boolean {
+                recoveryCalls.incrementAndGet()
+                releaseFirst.countDown()
+                return true
+            }
+        }
+        val stuckCalls = java.util.concurrent.atomic.AtomicInteger(0)
+        val printer = FakePrinterTransport { ByteArray(0) }
+        val q = JobQueue(
+            pipeline,
+            LegacyPrinterSession { printer },
+            renderTimeoutMs = 100,
+            onPipelineStuck = { stuckCalls.incrementAndGet() },
+        )
+        queue = q
+
+        val timedOutId = q.submit(pdf(), "job-timeout")
+        assertTrue(firstEntered.await(5, TimeUnit.SECONDS))
+        val firstDeadline = System.currentTimeMillis() + 5_000
+        while (q.get(timedOutId)!!.state != JobState.ABORTED && System.currentTimeMillis() < firstDeadline) {
+            Thread.sleep(10)
+        }
+        assertEquals(JobState.ABORTED, q.get(timedOutId)!!.state)
+        assertEquals("render-timeout", q.get(timedOutId)!!.stateReason)
+
+        val secondId = q.submit(pdf(), "job-after-recovery")
+        val secondDeadline = System.currentTimeMillis() + 5_000
+        while (q.get(secondId)!!.state != JobState.COMPLETED && System.currentTimeMillis() < secondDeadline) {
+            Thread.sleep(10)
+        }
+        assertEquals(JobState.COMPLETED, q.get(secondId)!!.state)
+        assertEquals("PCL-after-recovery", String(printer.lastRequest()))
+        assertEquals(2, invocations.get())
+        assertEquals(1, recoveryCalls.get())
+        assertEquals(0, stuckCalls.get())
     }
 
     @Test

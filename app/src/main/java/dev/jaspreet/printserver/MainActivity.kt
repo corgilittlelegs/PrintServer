@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.jaspreet.printserver.activity.ActivityLog
+import dev.jaspreet.printserver.access.ClientAccessSettingsState
 import dev.jaspreet.printserver.jobs.QueueState
 import dev.jaspreet.printserver.scan.ScanToneSettingsState
 import dev.jaspreet.printserver.service.ServerService
@@ -38,6 +39,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        ClientAccessSettingsState.initialize(applicationContext)
 
         // Setup the compose view and bind our state & action handlers
         setContent {
@@ -45,11 +47,13 @@ class MainActivity : AppCompatActivity() {
             val activityEntries by ActivityLog.entries.collectAsStateWithLifecycle()
             val queueEntries by QueueState.entries.collectAsStateWithLifecycle()
             val scanToneSettings by ScanToneSettingsState.settings.collectAsStateWithLifecycle()
+            val clientAccessSettings by ClientAccessSettingsState.settings.collectAsStateWithLifecycle()
 
             PrintServerTheme {
                 PrintServerApp(
                     status = status,
                     scanToneSettings = scanToneSettings,
+                    clientAccessSettings = clientAccessSettings,
                     activityEntries = activityEntries,
                     queueEntries = queueEntries,
                     onStartServerClick = { startServerIfPermitted() },
@@ -64,6 +68,7 @@ class MainActivity : AppCompatActivity() {
                     onScanToneSettingsChange = { brightness, contrast ->
                         ScanToneSettingsState.update(brightness, contrast)
                     },
+                    onClientAccessSave = ClientAccessSettingsState::save,
                 )
             }
         }

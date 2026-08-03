@@ -11,6 +11,8 @@ import com.hp.jipp.model.Status
 import com.hp.jipp.model.Types
 import dev.jaspreet.printserver.activity.ActivityStatus
 import dev.jaspreet.printserver.activity.toActivityStatus
+import dev.jaspreet.printserver.access.ClientAccessGate
+import dev.jaspreet.printserver.access.NetworkService
 import dev.jaspreet.printserver.jobs.JobQueue
 import dev.jaspreet.printserver.render.FakeRenderingPipeline
 import dev.jaspreet.printserver.scan.SupplyCartridge
@@ -51,6 +53,7 @@ class LocalIppServerTest {
         pipeline: dev.jaspreet.printserver.render.RenderingPipeline = FakeRenderingPipeline(),
         capabilities: PrinterCapabilities = PrinterCapabilities.deskJet2300(URI.create("ipp://127.0.0.1:0/ipp/print")),
         supplyStatusProvider: () -> SupplyStatus? = { null },
+        clientAccessGate: ClientAccessGate = ClientAccessGate.ALLOW_ALL,
     ): Int {
         val q = JobQueue(pipeline, LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } })
         queue = q
@@ -62,6 +65,7 @@ class LocalIppServerTest {
             jobQueue = q,
             spoolDir = dir,
             supplyStatusProvider = supplyStatusProvider,
+            clientAccessGate = clientAccessGate,
         )
         s.start(bindAddress = null)
         server = s
@@ -89,12 +93,49 @@ class LocalIppServerTest {
     )
 
     @Test
-    fun `answers get-printer-attributes with pdf and jpeg support`() {
+    fun `restricted client is rejected before IPP parsing or spool creation`() {
+        var observedService: NetworkService? = null
+        val port = start(
+            clientAccessGate = ClientAccessGate { _, service ->
+                observedService = service
+                false
+            },
+        )
+
+        val conn = URL("http://127.0.0.1:$port/ipp/print").openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.doOutput = true
+        conn.setFixedLengthStreamingMode(7)
+        conn.outputStream.use { it.write("blocked".toByteArray()) }
+        assertEquals(403, conn.responseCode)
+        assertEquals(NetworkService.TIER2_IPP, observedService)
+        assertTrue(spoolDir!!.listFiles().orEmpty().isEmpty())
+        assertTrue(queue!!.listActive().isEmpty())
+    }
+
+    @Test
+    fun `answers get-printer-attributes with verified profile document formats`() {
         val port = start()
         val resp = ipp(port, IppPacket(Operation.getPrinterAttributes, 1, operationGroup()))
         assertEquals(Status.successfulOk, resp.status)
         val formats = resp[Tag.printerAttributes]!!.getValues(Types.documentFormatSupported)
-        assertEquals(listOf("application/pdf", "image/jpeg"), formats)
+        assertEquals(listOf("application/pdf", "image/pwg-raster", "image/jpeg"), formats)
+    }
+
+    @Test
+    fun `response preserves request IPP version`() {
+        val port = start()
+        val request = IppPacket(
+            0x0101,
+            Operation.getPrinterAttributes.code,
+            23,
+            operationGroup(),
+        )
+
+        val response = ipp(port, request)
+
+        assertEquals(0x0101, response.versionNumber)
+        assertEquals(Status.successfulOk, response.status)
     }
 
     @Test
@@ -112,7 +153,7 @@ class LocalIppServerTest {
     }
 
     @Test
-    fun `print-job rejects pwg raster until native raster validation exists`() {
+    fun `print-job accepts pwg raster exposed by verified profile`() {
         val port = start()
         val request = IppPacket(
             Operation.printJob, 22,
@@ -125,8 +166,8 @@ class LocalIppServerTest {
             ),
         )
         val resp = ipp(port, request, "RaS2 fake raster".toByteArray())
-        assertEquals(Status.clientErrorDocumentFormatNotSupported, resp.status)
-        assertEquals(null, resp[Tag.jobAttributes]?.getValue(Types.jobId))
+        assertEquals(Status.successfulOk, resp.status)
+        assertNotNull(resp[Tag.jobAttributes]?.getValue(Types.jobId))
     }
 
     @Test
@@ -634,6 +675,55 @@ class LocalIppServerTest {
         val job = queue!!.get(jobId)!!
         assertEquals(dev.jaspreet.printserver.jobs.JobState.ABORTED, job.state)
         assertEquals("empty-document", job.stateReason)
+    }
+
+    @Test
+    fun `send-document cannot claim a reservation owned by another client address`() {
+        val port = start()
+        val foreignSpool = File.createTempFile("foreign", ".pdf", spoolDir!!)
+        val jobId = queue!!.reserve(foreignSpool, "private", clientAddress = "10.0.0.99")
+        val request = IppPacket(
+            Operation.sendDocument, 69,
+            groupOf(
+                Tag.operationAttributes,
+                Types.attributesCharset.of("utf-8"),
+                Types.attributesNaturalLanguage.of("en"),
+                Types.printerUri.of(URI.create("ipp://127.0.0.1/ipp/print")),
+                Types.jobId.of(jobId),
+            ),
+        )
+
+        val response = ipp(port, request, "%PDF hostile".toByteArray())
+
+        assertEquals(Status.clientErrorNotFound, response.status)
+        assertEquals(dev.jaspreet.printserver.jobs.JobState.PENDING, queue!!.get(jobId)!!.state)
+        assertEquals(0L, foreignSpool.length())
+    }
+
+    @Test
+    fun `print-job rejects a document that would exceed aggregate spool quota`() {
+        val q = JobQueue(FakeRenderingPipeline(), LegacyPrinterSession { FakePrinterTransport { ByteArray(0) } })
+        queue = q
+        val dir = createTempDir()
+        spoolDir = dir
+        val limited = LocalIppServer(
+            port = 0,
+            capabilities = PrinterCapabilities.deskJet2300(URI.create("ipp://127.0.0.1:0/ipp/print")),
+            jobQueue = q,
+            spoolDir = dir,
+            maxAggregateSpoolBytes = 4,
+        )
+        limited.start(bindAddress = null)
+        server = limited
+
+        val response = ipp(
+            limited.actualPort,
+            IppPacket(Operation.printJob, 691, operationGroup()),
+            byteArrayOf(1, 2, 3, 4, 5),
+        )
+
+        assertEquals(Status.serverErrorNotAcceptingJobs, response.status)
+        assertTrue(dir.listFiles().isNullOrEmpty())
     }
 
     @Test

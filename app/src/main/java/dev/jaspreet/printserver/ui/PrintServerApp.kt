@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Settings
@@ -44,6 +45,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.jaspreet.printserver.R
 import dev.jaspreet.printserver.activity.ActivityEntry
 import dev.jaspreet.printserver.activity.ActivityStatus
+import dev.jaspreet.printserver.access.ClientAccessMode
+import dev.jaspreet.printserver.access.ClientAccessSettings
 import dev.jaspreet.printserver.jobs.JobState
 import dev.jaspreet.printserver.jobs.QueueEntry
 import dev.jaspreet.printserver.jobs.QueueState
@@ -64,6 +67,7 @@ import java.util.Date
 fun PrintServerApp(
     status: ServerStatus,
     scanToneSettings: ScanToneSettings,
+    clientAccessSettings: ClientAccessSettings,
     activityEntries: List<ActivityEntry>,
     queueEntries: List<QueueEntry>,
     onStartServerClick: () -> Unit,
@@ -72,6 +76,7 @@ fun PrintServerApp(
     onCancelJob: (Int) -> Unit,
     onRetryJob: (Int) -> Unit,
     onScanToneSettingsChange: (brightness: Int, contrast: Int) -> Unit,
+    onClientAccessSave: (restricted: Boolean, rules: String) -> String?,
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val settingsRotationAngle by animateFloatAsState(
@@ -91,6 +96,7 @@ fun PrintServerApp(
     }
 
     var showLicensesDialog by remember { mutableStateOf(false) }
+    var showClientAccessDialog by remember { mutableStateOf(false) }
     var licensesText by remember { mutableStateOf("") }
 
     LaunchedEffect(showLicensesDialog) {
@@ -167,6 +173,21 @@ fun PrintServerApp(
                                     shape = RoundedCornerShape(16.dp)
                                 )
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("Restricted Access", fontWeight = FontWeight.Medium) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    showClientAccessDialog = true
+                                },
+                            )
                             DropdownMenuItem(
                                 text = { Text("Disable Battery Optimization", fontWeight = FontWeight.Medium) },
                                 leadingIcon = {
@@ -613,6 +634,11 @@ fun PrintServerApp(
                                         else -> "N/A"
                                     },
                                     "Network Name" to (status.printerName ?: "N/A"),
+                                    "Network Access" to if (clientAccessSettings.mode == ClientAccessMode.RESTRICTED) {
+                                        "Restricted (${clientAccessSettings.rules.size} rule${if (clientAccessSettings.rules.size == 1) "" else "s"})"
+                                    } else {
+                                        "Open"
+                                    },
                                     "Manufacturer" to (status.manufacturer ?: "N/A"),
                                     "Model" to (status.model ?: "N/A"),
                                     "Verified Profile" to (status.profileName ?: "N/A"),
@@ -695,6 +721,102 @@ fun PrintServerApp(
             containerColor = MaterialTheme.colorScheme.surface
         )
     }
+
+    if (showClientAccessDialog) {
+        RestrictedAccessDialog(
+            settings = clientAccessSettings,
+            onDismiss = { showClientAccessDialog = false },
+            onSave = { restricted, rules ->
+                onClientAccessSave(restricted, rules).also { error ->
+                    if (error == null) showClientAccessDialog = false
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun RestrictedAccessDialog(
+    settings: ClientAccessSettings,
+    onDismiss: () -> Unit,
+    onSave: (Boolean, String) -> String?,
+) {
+    var restricted by remember(settings) {
+        mutableStateOf(settings.mode == ClientAccessMode.RESTRICTED)
+    }
+    var rules by remember(settings) { mutableStateOf(settings.rules.joinToString("\n")) }
+    var error by remember(settings) { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Restricted Access", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    "When enabled, only the listed IPv4 devices or ranges can print or scan. " +
+                        "The printer remains visible to other devices, but their connections are blocked.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Enable restricted access", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (restricted) "Guest list is active" else "All Wi-Fi clients are allowed",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
+                        )
+                    }
+                    Switch(checked = restricted, onCheckedChange = { restricted = it; error = null })
+                }
+                OutlinedTextField(
+                    value = rules,
+                    onValueChange = { rules = it; error = null },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Allowed addresses") },
+                    supportingText = {
+                        Text("One per line, for example 192.168.0.100 or 192.168.0.0/28")
+                    },
+                    minLines = 4,
+                    maxLines = 8,
+                    isError = error != null,
+                    enabled = restricted,
+                )
+                if (restricted && rules.isBlank()) {
+                    Text(
+                        "Warning: saving an empty guest list blocks every network client.",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                error?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+                Text(
+                    "This is a Wi-Fi guest list, not password encryption. Device addresses can change; " +
+                        "a router DHCP reservation gives the most reliable exact-address rule.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { error = onSave(restricted, rules) }) {
+                Text("Save", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        shape = RoundedCornerShape(16.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+    )
 }
 
 @Composable

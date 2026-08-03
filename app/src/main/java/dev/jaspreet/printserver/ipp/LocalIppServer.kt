@@ -1,6 +1,8 @@
 package dev.jaspreet.printserver.ipp
 
 import com.hp.jipp.encoding.AttributeGroup
+import dev.jaspreet.printserver.access.ClientAccessGate
+import dev.jaspreet.printserver.access.NetworkService
 import com.hp.jipp.encoding.AttributeGroup.Companion.groupOf
 import com.hp.jipp.encoding.IppInputStream
 import com.hp.jipp.encoding.IppOutputStream
@@ -16,6 +18,7 @@ import dev.jaspreet.printserver.http.DecodedBodyInputStream
 import dev.jaspreet.printserver.http.HttpHead
 import dev.jaspreet.printserver.jobs.ColorMode
 import dev.jaspreet.printserver.jobs.JobQueue
+import dev.jaspreet.printserver.jobs.JobQueueCapacityException
 import dev.jaspreet.printserver.jobs.JobState
 import dev.jaspreet.printserver.jobs.PrintQuality
 import dev.jaspreet.printserver.scan.SupplyStatus
@@ -43,8 +46,10 @@ class LocalIppServer(
     private val jobQueue: JobQueue,
     private val spoolDir: File,
     private val maxDocumentBytes: Long = BodyReader.DEFAULT_MAX_BYTES,
+    private val maxAggregateSpoolBytes: Long = 400L * 1_000_000L,
     private val maxConcurrentClients: Int = 64,
     private val supplyStatusProvider: () -> SupplyStatus? = { null },
+    private val clientAccessGate: ClientAccessGate = ClientAccessGate.ALLOW_ALL,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
     private val executor = Executors.newCachedThreadPool()
@@ -52,6 +57,7 @@ class LocalIppServer(
     // Same rationale as IppRelayServer: bound thread growth from concurrent
     // connections so a flood of LAN connections can't OOM the app.
     private val clientSlots = Semaphore(maxConcurrentClients)
+    private val spoolBudgetLock = Any()
 
     val actualPort: Int get() = serverSocket?.localPort ?: port
 
@@ -80,6 +86,10 @@ class LocalIppServer(
             val cout = BufferedOutputStream(client.getOutputStream())
             while (true) {
                 val head = try { HttpHead.parse(cin) ?: break } catch (_: IOException) { break }
+                if (!clientAccessGate.allows(clientAddress, NetworkService.TIER2_IPP)) {
+                    writeForbidden(cout)
+                    break
+                }
                 val response = try {
                     // DecodedBodyInputStream presents exactly this request's body (whatever the
                     // framing) as a stream that stops at -1 at its logical end, including
@@ -126,20 +136,24 @@ class LocalIppServer(
         val input = IppInputStream(decodedBody)
         try {
             val request = input.readPacket()
-            return when (request.code) {
+            val response = when (request.code) {
                 Operation.getPrinterAttributes.code -> getPrinterAttributes(request)
                 Operation.validateJob.code -> validateJob(request)
                 Operation.printJob.code -> printJob(request, input, clientAddress)
                 Operation.createJob.code -> createJob(request, clientAddress)
-                Operation.sendDocument.code -> sendDocument(request, input)
-                Operation.closeJob.code -> closeJob(request)
-                Operation.getJobAttributes.code -> jobAttributes(request)
-                Operation.getJobs.code -> getJobs(request)
-                Operation.cancelJob.code -> cancelJob(request)
-                Operation.cancelMyJobs.code -> cancelMyJobs(request)
+                Operation.sendDocument.code -> sendDocument(request, input, clientAddress)
+                Operation.closeJob.code -> closeJob(request, clientAddress)
+                Operation.getJobAttributes.code -> jobAttributes(request, clientAddress)
+                Operation.getJobs.code -> getJobs(request, clientAddress)
+                Operation.cancelJob.code -> cancelJob(request, clientAddress)
+                Operation.cancelMyJobs.code -> cancelMyJobs(request, clientAddress)
                 Operation.identifyPrinter.code -> IppPacket(Status.successfulOk, request.requestId, operationGroup())
                 else -> errorResponse(request.requestId, Status.serverErrorOperationNotSupported)
             }
+            // RFC 2911 section 3.1.8 requires the response to use the request's IPP version.
+            // JIPP's Status constructor defaults to IPP 2.0, which made otherwise successful
+            // IPP 1.1 operations fail strict clients such as macOS's ipptool.
+            return response.copy(versionNumber = request.versionNumber)
         } finally {
             // Attribute-only operations (Validate-Job, Create-Job, ...) never read `input`
             // themselves, so a client that incorrectly attaches trailing bytes to one of those
@@ -188,13 +202,22 @@ class LocalIppServer(
         }
         spoolDir.mkdirs()
         val spool = File.createTempFile("job", spoolExtension(format), spoolDir)
-        val written = streamToFile(input, spool, append = false)
+        val written = try {
+            streamToFile(input, spool, append = false)
+        } catch (_: SpoolQuotaExceededException) {
+            return errorResponse(request.requestId, Status.serverErrorNotAcceptingJobs)
+        }
         if (written == 0L) {
             spool.delete()
             return errorResponse(request.requestId, Status.clientErrorBadRequest)
         }
         val name = request[Tag.operationAttributes]?.getValue(Types.jobName)?.value ?: "untitled"
-        val jobId = jobQueue.submit(spool, name, format, clientAddress, resolveQuality(request), resolveColorMode(request))
+        val jobId = try {
+            jobQueue.submit(spool, name, format, clientAddress, resolveQuality(request), resolveColorMode(request))
+        } catch (_: JobQueueCapacityException) {
+            spool.delete()
+            return errorResponse(request.requestId, Status.serverErrorTooManyJobs)
+        }
         // Report the queue's real state — submit() only enqueues, it does not
         // guarantee the worker has started (previously this hardcoded "processing").
         val actualState = jobQueue.get(jobId)?.state ?: JobState.PENDING
@@ -224,7 +247,12 @@ class LocalIppServer(
         spoolDir.mkdirs()
         val spool = File.createTempFile("job", spoolExtension(format), spoolDir)
         val name = request[Tag.operationAttributes]?.getValue(Types.jobName)?.value ?: "untitled"
-        val jobId = jobQueue.reserve(spool, name, format, clientAddress, resolveQuality(request), resolveColorMode(request))
+        val jobId = try {
+            jobQueue.reserve(spool, name, format, clientAddress, resolveQuality(request), resolveColorMode(request))
+        } catch (_: JobQueueCapacityException) {
+            spool.delete()
+            return errorResponse(request.requestId, Status.serverErrorTooManyJobs)
+        }
         return IppPacket(
             Status.successfulOk, request.requestId,
             operationGroup(),
@@ -239,15 +267,15 @@ class LocalIppServer(
     }
 
     /** Send-Document: delivers the document bytes for a job reserved via Create-Job. */
-    private fun sendDocument(request: IppPacket, input: InputStream): IppPacket {
+    private fun sendDocument(request: IppPacket, input: InputStream, clientAddress: String?): IppPacket {
         val jobId = request[Tag.operationAttributes]?.getValue(Types.jobId)
             ?: return errorResponse(request.requestId, Status.clientErrorBadRequest)
-        val job = jobQueue.get(jobId)
+        val job = jobQueue.getOwned(jobId, clientAddress)
             ?: return errorResponse(request.requestId, Status.clientErrorNotFound)
         // The first Send-Document claims the reserved job before any bytes are read. A
         // duplicate/replayed request now fails while the first one is still spooling instead
         // of appending to the same file or enqueueing the same job twice.
-        if (jobQueue.beginSpooling(jobId) == null) {
+        if (jobQueue.beginSpoolingOwned(jobId, clientAddress) == null) {
             return errorResponse(request.requestId, Status.clientErrorNotPossible)
         }
         try {
@@ -266,6 +294,9 @@ class LocalIppServer(
             // turns this exception into the client-facing 413 response.
             jobQueue.fail(jobId, "request-entity-too-large")
             throw e
+        } catch (_: SpoolQuotaExceededException) {
+            jobQueue.fail(jobId, "spool-quota-exceeded")
+            return errorResponse(request.requestId, Status.serverErrorNotAcceptingJobs)
         } catch (e: IOException) {
             jobQueue.fail(jobId, "document-receive-error")
             throw e
@@ -288,10 +319,10 @@ class LocalIppServer(
     }
 
     /** Close-Job: no-op beyond validating the job exists — Send-Document already enqueues it. */
-    private fun closeJob(request: IppPacket): IppPacket {
+    private fun closeJob(request: IppPacket, clientAddress: String?): IppPacket {
         val jobId = request[Tag.operationAttributes]?.getValue(Types.jobId)
             ?: return errorResponse(request.requestId, Status.clientErrorBadRequest)
-        val job = jobQueue.get(jobId)
+        val job = jobQueue.getOwned(jobId, clientAddress)
             ?: return errorResponse(request.requestId, Status.clientErrorNotFound)
         return IppPacket(
             Status.successfulOk, request.requestId,
@@ -306,8 +337,8 @@ class LocalIppServer(
         )
     }
 
-    private fun getJobs(request: IppPacket): IppPacket {
-        val jobGroups = jobQueue.listActive().map { job ->
+    private fun getJobs(request: IppPacket, clientAddress: String?): IppPacket {
+        val jobGroups = jobQueue.listActiveForClient(clientAddress).map { job ->
             groupOf(
                 Tag.jobAttributes,
                 Types.jobId.of(job.id),
@@ -319,15 +350,15 @@ class LocalIppServer(
         return IppPacket(Status.successfulOk, request.requestId, *(listOf(operationGroup()) + jobGroups).toTypedArray())
     }
 
-    private fun cancelMyJobs(request: IppPacket): IppPacket {
-        jobQueue.listActive().forEach { jobQueue.cancel(it.id) }
+    private fun cancelMyJobs(request: IppPacket, clientAddress: String?): IppPacket {
+        jobQueue.listActiveForClient(clientAddress).forEach { jobQueue.cancelOwned(it.id, clientAddress) }
         return IppPacket(Status.successfulOk, request.requestId, operationGroup())
     }
 
-    private fun jobAttributes(request: IppPacket): IppPacket {
+    private fun jobAttributes(request: IppPacket, clientAddress: String?): IppPacket {
         val jobId = request[Tag.operationAttributes]?.getValue(Types.jobId)
             ?: return errorResponse(request.requestId, Status.clientErrorBadRequest)
-        val job = jobQueue.get(jobId)
+        val job = jobQueue.getOwned(jobId, clientAddress)
             ?: return errorResponse(request.requestId, Status.clientErrorNotFound)
         return IppPacket(
             Status.successfulOk, request.requestId,
@@ -342,11 +373,11 @@ class LocalIppServer(
         )
     }
 
-    private fun cancelJob(request: IppPacket): IppPacket {
+    private fun cancelJob(request: IppPacket, clientAddress: String?): IppPacket {
         val jobId = request[Tag.operationAttributes]?.getValue(Types.jobId)
             ?: return errorResponse(request.requestId, Status.clientErrorBadRequest)
-        val job = jobQueue.get(jobId)
-        return if (jobQueue.cancel(jobId)) {
+        val job = jobQueue.getOwned(jobId, clientAddress)
+        return if (job != null && jobQueue.cancelOwned(jobId, clientAddress)) {
             IppPacket(Status.successfulOk, request.requestId, operationGroup())
         } else {
             // Surface *why* it couldn't be canceled (already processing/completed/etc)
@@ -417,7 +448,15 @@ class LocalIppServer(
                 while (true) {
                     val n = input.read(buf)
                     if (n < 0) break
-                    out.write(buf, 0, n)
+                    synchronized(spoolBudgetLock) {
+                        val used = spoolDir.listFiles()?.sumOf { candidate ->
+                            if (candidate.isFile) candidate.length() else 0L
+                        } ?: 0L
+                        if (n.toLong() > maxAggregateSpoolBytes - used) {
+                            throw SpoolQuotaExceededException()
+                        }
+                        out.write(buf, 0, n)
+                    }
                     written += n
                 }
             }
@@ -457,8 +496,18 @@ class LocalIppServer(
         if (extra != null) IppPacket(status, requestId, operationGroup(), extra)
         else IppPacket(status, requestId, operationGroup())
 
+    private fun writeForbidden(cout: BufferedOutputStream) {
+        cout.write(
+            "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .toByteArray(Charsets.ISO_8859_1),
+        )
+        cout.flush()
+    }
+
     fun stop() {
         try { serverSocket?.close() } catch (_: IOException) {}
         executor.shutdownNow()
     }
+
+    private class SpoolQuotaExceededException : IOException("Aggregate spool quota exceeded")
 }

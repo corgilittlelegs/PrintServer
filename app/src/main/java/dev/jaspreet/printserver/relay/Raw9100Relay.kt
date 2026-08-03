@@ -1,6 +1,8 @@
 package dev.jaspreet.printserver.relay
 
 import android.util.Log
+import dev.jaspreet.printserver.access.ClientAccessGate
+import dev.jaspreet.printserver.access.NetworkService
 import dev.jaspreet.printserver.usb.LegacyPrinterSession
 import java.io.IOException
 import java.net.InetAddress
@@ -20,6 +22,7 @@ class Raw9100Relay(
     private val legacySession: LegacyPrinterSession,
     private val maxSessionMs: Long = DEFAULT_MAX_SESSION_MS,
     private val maxSessionBytes: Long = DEFAULT_MAX_SESSION_BYTES,
+    private val clientAccessGate: ClientAccessGate = ClientAccessGate.ALLOW_ALL,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var currentClient: Socket? = null
@@ -39,6 +42,8 @@ class Raw9100Relay(
     }
 
     private fun handle(client: Socket) {
+        val clientAddress = client.inetAddress?.hostAddress
+        if (!clientAccessGate.allows(clientAddress, NetworkService.RAW_PRINT)) return
         currentClient = client
         client.soTimeout = 60_000
         // Acquired once for the whole connection (not per chunk): a raw-9100 session is one
@@ -54,6 +59,10 @@ class Raw9100Relay(
             var totalBytes = 0L
             try {
                 while (true) {
+                    if (!clientAccessGate.allows(clientAddress, NetworkService.RAW_PRINT)) {
+                        Log.i(TAG, "raw 9100 client access revoked, closing")
+                        break
+                    }
                     if (System.currentTimeMillis() - startedAt > maxSessionMs) {
                         Log.w(TAG, "raw 9100 client exceeded ${maxSessionMs}ms session cap, closing")
                         break

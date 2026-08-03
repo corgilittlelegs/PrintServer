@@ -4,7 +4,7 @@ import java.io.File
 import java.io.IOException
 
 /** Renders a PDF to a raw PPM (P6) file at fixed resolution via Ghostscript. */
-class GhostscriptRenderer(private val dpi: Int = 300) {
+class GhostscriptRenderer(private val dpi: Int = 300, private val maxPages: Int = 25) {
 
     fun renderToPpm(pdf: File, outPpm: File) {
         // No -dQUIET: gs's own diagnostics (missing device, malformed PDF, etc.)
@@ -13,6 +13,9 @@ class GhostscriptRenderer(private val dpi: Int = 300) {
         val code = GhostscriptNative.run(
             arrayOf(
                 "gs", "-dSAFER", "-dBATCH", "-dNOPAUSE",
+                // Render one page beyond the accepted limit so the caller can reject the
+                // document instead of silently printing only its first maxPages pages.
+                "-dLastPage=${maxPages + 1}",
                 "-sDEVICE=ppmraw", "-r$dpi",
                 "-o", outPpm.absolutePath,
                 pdf.absolutePath,

@@ -43,4 +43,9 @@ class PpmImageTest {
         // width * height * 3 as Int would overflow; must be rejected before allocating.
         PpmImage.parse(ppm("P6\n50000 50000\n255\n", ByteArray(0)))
     }
+
+    @Test(expected = IOException::class)
+    fun `rejects dimensions above configured pixel limit before allocation`() {
+        PpmImage.parse(ppm("P6\n11 10\n255\n", ByteArray(0)), maxPixels = 100)
+    }
 }

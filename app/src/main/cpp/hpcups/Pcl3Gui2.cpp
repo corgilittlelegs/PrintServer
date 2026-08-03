@@ -317,4 +317,3 @@ void Pcl3Gui2::configureRasterData()
     cur_pcl_buffer_ptr += seq_sizes[crd_type];
 
 } //configureRasterData
-

@@ -36,5 +36,11 @@
             android:name=".service.ServerService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <service
+            android:name=".render.RendererProcessService"
+            android:exported="false"
+            android:process=":renderer"
+            android:stopWithTask="false" />
     </application>
 </manifest>

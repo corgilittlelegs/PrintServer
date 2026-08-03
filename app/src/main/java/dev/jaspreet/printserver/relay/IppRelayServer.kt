@@ -1,6 +1,8 @@
 package dev.jaspreet.printserver.relay
 
 import android.util.Log
+import dev.jaspreet.printserver.access.ClientAccessGate
+import dev.jaspreet.printserver.access.NetworkService
 import dev.jaspreet.printserver.activity.ActivityLog
 import dev.jaspreet.printserver.activity.ActivityStatus
 import dev.jaspreet.printserver.http.HttpHead
@@ -28,6 +30,7 @@ class IppRelayServer(
     private val monitor: ActivityMonitor = ActivityMonitor.NONE,
     private val leaseTimeoutMs: Long = 60_000,
     private val maxConcurrentClients: Int = 64,
+    private val clientAccessGate: ClientAccessGate = ClientAccessGate.ALLOW_ALL,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
     private val executor = Executors.newCachedThreadPool()
@@ -67,6 +70,10 @@ class IppRelayServer(
                 // Parse the head BEFORE leasing, so an idle keep-alive
                 // connection never pins a printer channel.
                 val head = try { HttpHead.parse(cin) ?: break } catch (_: SocketTimeoutException) { break } catch (_: IOException) { break }
+                if (!clientAccessGate.allows(clientAddress, NetworkService.TIER1_IPP)) {
+                    writeForbidden(cout)
+                    break
+                }
                 val channel = try {
                     pool.lease(leaseTimeoutMs)
                 } catch (e: Exception) {
@@ -138,6 +145,18 @@ class IppRelayServer(
     private fun writeServiceUnavailable(cout: OutputStream) {
         try {
             cout.write("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+            cout.flush()
+        } catch (_: IOException) {
+            // Client already gone; nothing more we can do.
+        }
+    }
+
+    private fun writeForbidden(cout: OutputStream) {
+        try {
+            cout.write(
+                "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .toByteArray(Charsets.ISO_8859_1),
+            )
             cout.flush()
         } catch (_: IOException) {
             // Client already gone; nothing more we can do.

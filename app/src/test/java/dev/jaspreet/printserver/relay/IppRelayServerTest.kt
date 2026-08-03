@@ -1,5 +1,7 @@
 package dev.jaspreet.printserver.relay
 
+import dev.jaspreet.printserver.access.ClientAccessGate
+import dev.jaspreet.printserver.access.NetworkService
 import dev.jaspreet.printserver.activity.ActivityLog
 import dev.jaspreet.printserver.activity.ActivityStatus
 import dev.jaspreet.printserver.usb.FakePrinterTransport
@@ -48,6 +50,31 @@ class IppRelayServerTest {
         assertEquals(200, conn.responseCode)
         val body = conn.inputStream.readBytes().toString(Charsets.ISO_8859_1)
         assertEquals(true, body.startsWith("len="))
+    }
+
+    @Test
+    fun `restricted client is rejected before an IPP USB channel is leased`() {
+        val printer = FakePrinterTransport { ByteArray(0) }
+        var observedService: NetworkService? = null
+        val s = IppRelayServer(
+            port = 0,
+            pool = ChannelPool(listOf(printer)),
+            clientAccessGate = ClientAccessGate { _, service ->
+                observedService = service
+                false
+            },
+        )
+        s.start(bindAddress = null)
+        server = s
+
+        val conn = URL("http://127.0.0.1:${s.actualPort}/ipp/print").openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.doOutput = true
+        conn.setFixedLengthStreamingMode(7)
+        conn.outputStream.use { it.write("blocked".toByteArray()) }
+        assertEquals(403, conn.responseCode)
+        assertEquals(NetworkService.TIER1_IPP, observedService)
+        assertEquals(0, printer.lastRequest().size)
     }
 
     @Test

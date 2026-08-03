@@ -1,5 +1,7 @@
 package dev.jaspreet.printserver.escl
 
+import dev.jaspreet.printserver.access.ClientAccessGate
+import dev.jaspreet.printserver.access.NetworkService
 import dev.jaspreet.printserver.scan.ScanColorMode
 import dev.jaspreet.printserver.scan.ScanToneSettings
 import dev.jaspreet.printserver.scan.ScannerCapabilities
@@ -33,13 +35,25 @@ class LocalEsclServerTest {
         defaultToneSettings: () -> ScanToneSettings = { ScanToneSettings() },
         nextDocumentPollDelayMs: Long = 250,
         maxRequestBodyBytes: Long = 64L * 1024L,
+        maxScanOutputBytes: Long = 64L * 1024L * 1024L,
+        maxAggregateScanBytes: Long = 256L * 1024L * 1024L,
+        undeliveredRetentionMs: Long = 30 * 60_000L,
+        deliveredRetentionMs: Long = 5 * 60_000L,
+        clockMs: () -> Long = { System.currentTimeMillis() },
+        clientAccessGate: ClientAccessGate = ClientAccessGate.ALLOW_ALL,
     ): Int {
         spoolDir = createTempDir()
         val s = LocalEsclServer(
             port = 0, makeAndModel = "PrintServer Scanner", capabilities = capabilities,
             spoolDir = spoolDir, performScan = onScan, defaultToneSettings = defaultToneSettings,
             maxRequestBodyBytes = maxRequestBodyBytes,
+            maxScanOutputBytes = maxScanOutputBytes,
+            maxAggregateScanBytes = maxAggregateScanBytes,
+            undeliveredRetentionMs = undeliveredRetentionMs,
+            deliveredRetentionMs = deliveredRetentionMs,
+            clockMs = clockMs,
             nextDocumentPollDelayMs = nextDocumentPollDelayMs,
+            clientAccessGate = clientAccessGate,
         )
         s.start(bindAddress = null)
         server = s
@@ -86,6 +100,25 @@ class LocalEsclServerTest {
         assertEquals(200, status)
         assertTrue(body.contains("<scan:MaxWidth>2550</scan:MaxWidth>"))
         assertTrue(body.contains("RGB24"))
+    }
+
+    @Test
+    fun `restricted client is rejected before request parsing or scanning`() {
+        val scanned = AtomicBoolean(false)
+        var observedService: NetworkService? = null
+        val port = start(
+            onScan = { _, _, _, _, _ -> scanned.set(true) },
+            clientAccessGate = ClientAccessGate { _, service ->
+                observedService = service
+                false
+            },
+        )
+
+        val (status, _) = httpGet(port, "/eSCL/ScannerStatus")
+        assertEquals(403, status)
+        assertEquals(NetworkService.ESCL_SCAN, observedService)
+        assertFalse(scanned.get())
+        assertTrue(spoolDir.listFiles().orEmpty().isEmpty())
     }
 
     @Test
@@ -173,6 +206,46 @@ class LocalEsclServerTest {
 
         assertEquals(413, status)
         assertFalse(scanStarted.get())
+    }
+
+    @Test
+    fun `oversized scan output is aborted and deleted before delivery`() {
+        val port = start(
+            maxScanOutputBytes = 4,
+            onScan = { _, _, _, _, output -> output.writeBytes(ByteArray(5)) },
+        )
+        val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+        var attempts = 40
+        while (attempts-- > 0) {
+            val (_, statusBody) = httpGet(port, "/eSCL/ScannerStatus")
+            if (!statusBody.contains("Processing")) break
+            Thread.sleep(25)
+        }
+
+        val (status, _) = httpGet(port, "$location/NextDocument")
+        assertTrue(status != 200)
+        assertFalse(java.io.File(spoolDir, "escl-job-${location.substringAfterLast("/")}.jpg").exists())
+    }
+
+    @Test
+    fun `expired undelivered scan is removed from status and disk`() {
+        val now = java.util.concurrent.atomic.AtomicLong(1_000L)
+        val port = start(
+            undeliveredRetentionMs = 100,
+            clockMs = { now.get() },
+            onScan = { _, _, _, _, output -> output.writeBytes(byteArrayOf(1, 2, 3)) },
+        )
+        val (_, location) = httpPost(port, "/eSCL/ScanJobs", "<scan:ScanSettings></scan:ScanSettings>")
+        val output = java.io.File(spoolDir, "escl-job-${location.substringAfterLast("/")}.jpg")
+        var attempts = 40
+        while (!output.exists() && attempts-- > 0) Thread.sleep(25)
+        assertTrue(output.exists())
+
+        now.set(1_101L)
+        val (_, statusBody) = httpGet(port, "/eSCL/ScannerStatus")
+
+        assertFalse(statusBody.contains(location))
+        assertFalse(output.exists())
     }
 
     @Test

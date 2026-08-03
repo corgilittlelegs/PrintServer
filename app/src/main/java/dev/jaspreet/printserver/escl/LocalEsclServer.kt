@@ -1,6 +1,8 @@
 package dev.jaspreet.printserver.escl
 
 import android.util.Log
+import dev.jaspreet.printserver.access.ClientAccessGate
+import dev.jaspreet.printserver.access.NetworkService
 import dev.jaspreet.printserver.http.BodyTooLargeException
 import dev.jaspreet.printserver.http.BodyReader
 import dev.jaspreet.printserver.http.HttpHead
@@ -38,11 +40,10 @@ private fun EsclJobState.toWireString(): String = when (this) {
     EsclJobState.ABORTED -> "Aborted"
 }
 
-private class EsclJob(val id: String, val outputFile: File) {
+private class EsclJob(val id: String, val outputFile: File, val createdAtMs: Long) {
     @Volatile var state: EsclJobState = EsclJobState.PROCESSING
     val delivered = AtomicBoolean(false)
     val deliveredAtMs = AtomicLong(0)
-    val createdAtMs: Long = System.currentTimeMillis()
 }
 
 /**
@@ -70,7 +71,13 @@ class LocalEsclServer(
     private val defaultToneSettings: () -> ScanToneSettings = { ScanToneSettings() },
     private val maxConcurrentClients: Int = 64,
     private val maxRequestBodyBytes: Long = DEFAULT_MAX_REQUEST_BODY_BYTES,
+    private val maxScanOutputBytes: Long = 64L * 1024L * 1024L,
+    private val maxAggregateScanBytes: Long = 256L * 1024L * 1024L,
+    private val undeliveredRetentionMs: Long = 30 * 60_000L,
+    private val deliveredRetentionMs: Long = 5 * 60_000L,
+    private val clockMs: () -> Long = { System.currentTimeMillis() },
     private val nextDocumentPollDelayMs: Long = 250,
+    private val clientAccessGate: ClientAccessGate = ClientAccessGate.ALLOW_ALL,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
     private val executor = Executors.newCachedThreadPool()
@@ -124,7 +131,12 @@ class LocalEsclServer(
         client.use {
             val cin = BufferedInputStream(client.getInputStream())
             val cout = BufferedOutputStream(client.getOutputStream())
+            val clientAddress = client.inetAddress?.hostAddress
             val head = try { HttpHead.parse(cin) ?: return } catch (_: IOException) { return }
+            if (!clientAccessGate.allows(clientAddress, NetworkService.ESCL_SCAN)) {
+                respond(cout, 403, "text/plain", "")
+                return
+            }
             val (method, path) = parseStartLine(head.startLine) ?: run {
                 respond(cout, 400, "text/plain", "Bad Request")
                 return
@@ -138,6 +150,8 @@ class LocalEsclServer(
                 respond(cout, 400, "text/plain", "Bad Request")
                 return
             }
+
+            cleanupExpiredJobs()
 
             when {
                 method == "GET" && path == "/eSCL/ScannerCapabilities" -> {
@@ -172,7 +186,7 @@ class LocalEsclServer(
         spoolDir.mkdirs()
         val id = nextJobId.getAndIncrement().toString()
         val output = File(spoolDir, "escl-job-$id.jpg")
-        val job = EsclJob(id, output)
+        val job = EsclJob(id, output, clockMs())
         if (!currentJob.compareAndSet(null, job)) {
             logRequest("POST", "/eSCL/ScanJobs", 503, "scanner busy")
             respond(cout, 503, "text/plain", "Scanner busy")
@@ -182,11 +196,19 @@ class LocalEsclServer(
         executor.execute {
             try {
                 performScan(resolution, colorMode, brightness, contrast, output)
+                val outputBytes = output.length()
+                val aggregateBytes = jobs.values.sumOf { it.outputFile.length() }
+                if (outputBytes <= 0L || outputBytes > maxScanOutputBytes ||
+                    aggregateBytes > maxAggregateScanBytes
+                ) {
+                    throw IOException("Scan output exceeded storage limit")
+                }
                 job.state = EsclJobState.COMPLETED
                 Log.i("LocalEsclServer", "eSCL job ${job.id} completed outputBytes=${output.length()}")
             } catch (e: Exception) {
                 Log.w("LocalEsclServer", "Scan job ${job.id} aborted: ${e.message}", e)
                 job.state = EsclJobState.ABORTED
+                output.delete()
             } finally {
                 // Finish all bookkeeping (eviction / orphan cleanup) *before* clearing
                 // currentJob, since that's the signal that lets a new POST start --
@@ -235,8 +257,24 @@ class LocalEsclServer(
             }
     }
 
+    private fun cleanupExpiredJobs() {
+        val now = clockMs()
+        jobs.values.forEach { job ->
+            if (job.state == EsclJobState.PROCESSING) return@forEach
+            val deliveredAt = job.deliveredAtMs.get()
+            val expiresAt = if (deliveredAt > 0L) {
+                deliveredAt + deliveredRetentionMs
+            } else {
+                job.createdAtMs + undeliveredRetentionMs
+            }
+            if (now >= expiresAt && jobs.remove(job.id, job)) {
+                job.outputFile.delete()
+            }
+        }
+    }
+
     private fun handleNextDocument(cout: BufferedOutputStream, path: String) {
-        val requestStartedAtMs = System.currentTimeMillis()
+        val requestStartedAtMs = clockMs()
         val id = path.removePrefix("/eSCL/ScanJobs/").removeSuffix("/NextDocument")
         val job = waitForNextDocumentJob(id)
         // A known job that isn't COMPLETED must never be served -- Processing means no
@@ -269,7 +307,7 @@ class LocalEsclServer(
         val bodyLength = job.outputFile.length()
         respondFile(cout, 200, "image/jpeg", job.outputFile)
         job.delivered.set(true)
-        job.deliveredAtMs.compareAndSet(0, System.currentTimeMillis())
+        job.deliveredAtMs.compareAndSet(0, clockMs())
         logRequest("GET", path, 200, "job=$id bytes=$bodyLength")
     }
 
@@ -341,7 +379,7 @@ class LocalEsclServer(
                 EsclJobInfo(
                     id = job.id,
                     state = job.state.toWireString(),
-                    ageSeconds = ((System.currentTimeMillis() - job.createdAtMs) / 1000).coerceAtLeast(0),
+                    ageSeconds = ((clockMs() - job.createdAtMs) / 1000).coerceAtLeast(0),
                     imagesCompleted = if (job.state == EsclJobState.COMPLETED) 1 else 0,
                     imagesToTransfer = if (job.state == EsclJobState.COMPLETED && !job.delivered.get()) 1 else 0,
                     stateReason = when (job.state) {
@@ -376,7 +414,7 @@ class LocalEsclServer(
         bodyBytes: ByteArray = body.toByteArray(Charsets.UTF_8),
     ) {
         val statusText = when (status) {
-            200 -> "OK"; 201 -> "Created"; 400 -> "Bad Request"
+            200 -> "OK"; 201 -> "Created"; 400 -> "Bad Request"; 403 -> "Forbidden"
             404 -> "Not Found"; 413 -> "Payload Too Large"; 500 -> "Internal Server Error"; 503 -> "Service Unavailable"; else -> "Error"
         }
         val headers = buildString {

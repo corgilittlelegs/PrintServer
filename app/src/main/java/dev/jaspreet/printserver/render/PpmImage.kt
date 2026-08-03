@@ -7,7 +7,7 @@ import java.io.InputStream
 class PpmImage(val width: Int, val height: Int, val rgb: ByteArray) {
 
     companion object {
-        fun parse(input: InputStream): PpmImage {
+        fun parse(input: InputStream, maxPixels: Long = 50_000_000L): PpmImage {
             if (nextToken(input) != "P6") throw IOException("Not a P6 PPM")
             val width = nextToken(input).toIntOrNull() ?: throw IOException("Bad width")
             val height = nextToken(input).toIntOrNull() ?: throw IOException("Bad height")
@@ -16,7 +16,8 @@ class PpmImage(val width: Int, val height: Int, val rgb: ByteArray) {
             // Compute in Long first: width * height * 3 as Int can silently overflow
             // and wrap negative, which would otherwise pass to ByteArray(negative).
             val expectedLong = width.toLong() * height.toLong() * 3L
-            if (width <= 0 || height <= 0 || expectedLong > Int.MAX_VALUE) {
+            val pixels = width.toLong() * height.toLong()
+            if (width <= 0 || height <= 0 || pixels > maxPixels || expectedLong > Int.MAX_VALUE) {
                 throw IOException("Invalid or oversized PPM dimensions: ${width}x$height")
             }
             val expected = expectedLong.toInt()

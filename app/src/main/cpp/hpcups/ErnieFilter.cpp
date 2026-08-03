@@ -2018,4 +2018,3 @@ void ErnieFilter::Flush()
     m_buffered_row_count = 0;
     m_row_index = 0;
 } //Flush
-

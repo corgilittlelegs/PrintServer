@@ -16,6 +16,8 @@ class PrintJob(
     @Volatile var state: JobState = JobState.PENDING
     @Volatile var stateReason: String = "none"
     val submittedAtMs: Long = System.currentTimeMillis()
+    /** Non-zero only for a Create-Job reservation that has not begun receiving bytes. */
+    @Volatile var reservationExpiresAtMs: Long = 0L
     /** Set when this job was created via [JobQueue.retry] — the original job's id. Tracking only. */
     @Volatile var retryOf: Int? = null
     /**

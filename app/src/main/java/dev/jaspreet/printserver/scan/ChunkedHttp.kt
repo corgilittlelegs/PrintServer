@@ -1,6 +1,7 @@
 package dev.jaspreet.printserver.scan
 
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 
 /** Decodes an HTTP/1.1 response's header and chunked-transfer-encoded body (RFC 7230
  *  §4.1) from a [PullReader]. See docs/superpowers/specs/2026-07-19-native-scan-pipeline-design.md
@@ -34,19 +35,28 @@ object ChunkedHttp {
 
     /** Reads a chunked body: repeated (hex-size line, that many bytes, trailing CRLF),
      *  terminated by a zero-size chunk. */
-    fun readChunkedBody(reader: PullReader): ByteArray {
+    fun readChunkedBody(reader: PullReader, maxBytes: Long = DEFAULT_MAX_BODY_BYTES): ByteArray {
         val out = ByteArrayOutputStream()
+        var total = 0L
         while (true) {
-            val size = reader.readLine().trim().toInt(16)
+            val sizeToken = reader.readLine().substringBefore(';').trim()
+            val sizeLong = sizeToken.toLongOrNull(16)
+                ?: throw IOException("Invalid chunk size")
+            if (sizeLong < 0L || sizeLong > Int.MAX_VALUE || sizeLong > maxBytes - total) {
+                throw IOException("Chunked body exceeds maximum size")
+            }
+            val size = sizeLong.toInt()
             if (size == 0) {
                 reader.readLine() // trailing blank line after the zero chunk
                 break
             }
             out.write(reader.readExactly(size))
+            total += size
             reader.readLine() // trailing CRLF after this chunk's data
         }
         return out.toByteArray()
     }
 
     private const val MAX_HEADER_SYNC_LINES = 32
+    private const val DEFAULT_MAX_BODY_BYTES = 64L * 1024L * 1024L
 }

@@ -8,6 +8,14 @@ import org.junit.Test
 class VerifiedPrinterProfilesTest {
 
     @Test
+    fun `verified DeskJet profile exposes only validated document formats`() {
+        assertEquals(
+            listOf("application/pdf", "image/pwg-raster", "image/jpeg"),
+            VerifiedPrinterProfiles.DESKJET_2300.documentFormatsSupported,
+        )
+    }
+
+    @Test
     fun `matches exact DeskJet 2300 device id`() {
         val info = DeviceIdInfo(
             manufacturer = "HP",

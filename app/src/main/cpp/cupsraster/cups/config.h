@@ -2,7 +2,7 @@
 /*
  * Configuration file for CUPS.
  *
- * Copyright © 2020-2023 by OpenPrinting
+ * Copyright © 2020-2025 by OpenPrinting
  * Copyright © 2007-2019 by Apple Inc.
  * Copyright © 1997-2007 by Easy Software Products.
  *
@@ -17,8 +17,8 @@
  * Version of software...
  */
 
-#define CUPS_SVERSION "CUPS v2.4.10"
-#define CUPS_MINIMAL "CUPS/2.4.10"
+#define CUPS_SVERSION "CUPS v2.4.19"
+#define CUPS_MINIMAL "CUPS/2.4.19"
 #define CUPS_LITE	0
 
 
@@ -85,6 +85,13 @@
  */
 
 #define CUPS_DEFAULT_ERROR_POLICY "stop-printer"
+
+
+/*
+ * Default PeerCred value...
+ */
+
+#define CUPS_DEFAULT_PEER_CRED "on"
 
 
 /*
@@ -382,6 +389,13 @@
 
 
 /*
+ * Do we have the timegm function?
+ */
+
+#define HAVE_TIMEGM 1
+
+
+/*
  * Do we have rresvport_af()?
  */
 
@@ -651,13 +665,6 @@
 #define HAVE_SYS_STATFS_H 1
 #define HAVE_SYS_STATVFS_H 1
 #define HAVE_SYS_VFS_H 1
-
-
-/*
- * Location of macOS localization bundle, if any.
- */
-
-/* #undef CUPS_BUNDLEDIR */
 
 
 /*

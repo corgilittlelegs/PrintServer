@@ -40,6 +40,7 @@ android {
 
     buildFeatures {
         compose = true
+        aidl = true
     }
 
     externalNativeBuild {
@@ -67,7 +68,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-    implementation("com.hp.jipp:jipp-core:0.7.16")
+    implementation("com.hp.jipp:jipp-core:0.7.18")
 
     // Jetpack Compose
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))

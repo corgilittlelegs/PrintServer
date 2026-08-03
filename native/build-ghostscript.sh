@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # --- config ---------------------------------------------------------------
-GS_VERSION=10.03.1
-GS_TAG=gs10031
+GS_VERSION=10.07.1
+GS_TAG=gs10071
 # Pin this after the first successful download: `shasum -a 256 downloads/ghostscript-$GS_VERSION.tar.gz`
 # then paste the value below so reruns/other machines verify against a known-good hash.
-GS_SHA256="${GS_SHA256:-31cd01682ad23a801cc3bbc222a55f07c4ea3e068bdfb447792d54db21a2e8ad}"
+GS_SHA256="${GS_SHA256:-2fc74362f9be6fae1b0a65d38fdcfd4f0b518cc3b07c5581fb661eb4d2e15251}"
 API=26
 NDK="${ANDROID_NDK_HOME:-$HOME/Library/Android/sdk/ndk/26.1.10909125}"
 HOST_TAG=darwin-x86_64        # NDK toolchain dir name; same on Apple Silicon
@@ -40,6 +40,13 @@ if [ ! -d "ghostscript-$GS_VERSION" ]; then
   tar xzf "ghostscript-$GS_VERSION.tar.gz"
 fi
 cd "ghostscript-$GS_VERSION"
+
+# Ghostscript 10.07.1 collides with Android Bionic's __printflike definition
+# when a device header has already redefined printf. Keep this source fix
+# checked in and idempotent so clean and resumed builds use the same input.
+if ! grep -q "Android Bionic defines __printflike" base/gserrors.h; then
+  patch -p0 < "$ROOT/patches/ghostscript-$GS_VERSION/0001-bionic-printflike-macro.patch"
+fi
 
 ./configure \
   --host=aarch64-linux-android \

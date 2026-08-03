@@ -3,6 +3,7 @@ package dev.jaspreet.printserver.scan
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.io.IOException
 
 class ChunkedHttpTest {
 
@@ -73,5 +74,17 @@ class ChunkedHttpTest {
         val reader = readerOver(whole)
         val decoded = ChunkedHttp.readChunkedBody(reader)
         assertArrayEquals(binaryChunk, decoded)
+    }
+
+    @Test(expected = IOException::class)
+    fun `rejects a chunked body whose cumulative size exceeds the configured limit`() {
+        val reader = readerOver("3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n".toByteArray())
+        ChunkedHttp.readChunkedBody(reader, maxBytes = 5)
+    }
+
+    @Test(expected = IOException::class)
+    fun `rejects malformed or overflowing chunk sizes`() {
+        val reader = readerOver("ffffffffffffffff\r\n".toByteArray())
+        ChunkedHttp.readChunkedBody(reader)
     }
 }

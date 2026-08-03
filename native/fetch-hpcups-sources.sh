@@ -7,7 +7,7 @@ CPPDIR="$ROOT/../app/src/main/cpp"
 # Pin these after the first successful download (see Task 2's Ghostscript
 # script for the same pattern): `shasum -a 256 downloads/<file>`.
 HPLIP_SHA256="${HPLIP_SHA256:-5d7643831893a5e2addf9d42d581a5dbfe5aaf023626886b8762c5645da0f1fb}"
-CUPS_SHA256="${CUPS_SHA256:-d75757c2bc0f7a28b02ee4d52ca9e4b1aa1ba2affe16b985854f5336940e5ad7}"
+CUPS_SHA256="${CUPS_SHA256:-820984b12a67f98705785aae2dd1347fe0ac097828001d4583ff64574aed6389}"
 
 verify() {
   local file="$1" expected="$2"
@@ -28,15 +28,16 @@ if [ ! -d hplip-3.24.4 ]; then
   verify hplip-3.24.4.tar.gz "$HPLIP_SHA256"
   tar xzf hplip-3.24.4.tar.gz
 fi
-if [ ! -d cups-2.4.10 ]; then
-  curl -LO "https://github.com/OpenPrinting/cups/releases/download/v2.4.10/cups-2.4.10-source.tar.gz"
-  verify cups-2.4.10-source.tar.gz "$CUPS_SHA256"
-  tar xzf cups-2.4.10-source.tar.gz
+if [ ! -d cups-2.4.19 ]; then
+  curl -LO "https://github.com/OpenPrinting/cups/releases/download/v2.4.19/cups-2.4.19-source.tar.gz"
+  verify cups-2.4.19-source.tar.gz "$CUPS_SHA256"
+  tar xzf cups-2.4.19-source.tar.gz
 fi
 
 # hpcups filter sources (the whole prnt/hpcups directory)
 mkdir -p "$CPPDIR/hpcups" "$CPPDIR/cupsraster/cups"
 cp -R hplip-3.24.4/prnt/hpcups/* "$CPPDIR/hpcups/"
+rm -rf "$CPPDIR/hpcups-common"
 cp -R hplip-3.24.4/common "$CPPDIR/hpcups-common"
 # Prebuilt x86 image-processor plugin blobs — wrong arch for this build and
 # unused anyway (DISABLE_IMAGEPROCESSOR is set; see CMakeLists.txt).
@@ -83,7 +84,7 @@ mv "$CPPDIR/hpcups/excluded/dbuscomm.cpp" "$CPPDIR/hpcups/excluded/dbuscomm.h" "
 # so splitting .c from .h across directories breaks those. Full header set
 # copied because the raster/string/language private headers pull each other
 # in extensively; a minimal subset became whack-a-mole.
-cp cups-2.4.10/cups/*.h "$CPPDIR/cupsraster/cups/" 2>/dev/null || true
+cp cups-2.4.19/cups/*.h "$CPPDIR/cupsraster/cups/" 2>/dev/null || true
 
 # hpcups is a real CUPS filter that normally links the full libcups.so; PPD
 # parsing (ppdOpenFile etc) and raster I/O both pull in a meaningful chunk of
@@ -94,49 +95,50 @@ cp cups-2.4.10/cups/*.h "$CPPDIR/cupsraster/cups/" 2>/dev/null || true
 # getdevices.c, getifaddrs.c, sidechannel.c, adminutil.c, snmp*) — hpcups
 # talks to the printer over the fds we hand it, never over CUPS's own
 # backend transport.
-cp cups-2.4.10/cups/array.c cups-2.4.10/cups/auth.c cups-2.4.10/cups/debug.c \
-   cups-2.4.10/cups/dest.c cups-2.4.10/cups/dest-job.c \
-   cups-2.4.10/cups/dest-localization.c cups-2.4.10/cups/dest-options.c \
-   cups-2.4.10/cups/dir.c cups-2.4.10/cups/encode.c cups-2.4.10/cups/file.c \
-   cups-2.4.10/cups/getputfile.c cups-2.4.10/cups/globals.c \
-   cups-2.4.10/cups/hash.c cups-2.4.10/cups/http.c cups-2.4.10/cups/http-addr.c \
-   cups-2.4.10/cups/http-addrlist.c cups-2.4.10/cups/http-support.c \
-   cups-2.4.10/cups/ipp.c cups-2.4.10/cups/ipp-file.c cups-2.4.10/cups/ipp-vars.c \
-   cups-2.4.10/cups/ipp-support.c cups-2.4.10/cups/langprintf.c \
-   cups-2.4.10/cups/language.c cups-2.4.10/cups/md5.c cups-2.4.10/cups/md5passwd.c \
-   cups-2.4.10/cups/notify.c cups-2.4.10/cups/options.c cups-2.4.10/cups/pwg-media.c \
-   cups-2.4.10/cups/raster-error.c cups-2.4.10/cups/raster-stream.c \
-   cups-2.4.10/cups/raster-stubs.c cups-2.4.10/cups/request.c \
-   cups-2.4.10/cups/snprintf.c cups-2.4.10/cups/string.c cups-2.4.10/cups/tempfile.c \
-   cups-2.4.10/cups/thread.c cups-2.4.10/cups/transcode.c cups-2.4.10/cups/usersys.c \
-   cups-2.4.10/cups/util.c \
-   cups-2.4.10/cups/ppd.c cups-2.4.10/cups/ppd-attr.c cups-2.4.10/cups/ppd-cache.c \
-   cups-2.4.10/cups/ppd-conflicts.c cups-2.4.10/cups/ppd-custom.c \
-   cups-2.4.10/cups/ppd-emit.c cups-2.4.10/cups/ppd-localize.c \
-   cups-2.4.10/cups/ppd-mark.c cups-2.4.10/cups/ppd-page.c cups-2.4.10/cups/ppd-util.c \
-   cups-2.4.10/cups/raster-interpret.c \
+cp cups-2.4.19/cups/array.c cups-2.4.19/cups/auth.c cups-2.4.19/cups/debug.c \
+   cups-2.4.19/cups/dest.c cups-2.4.19/cups/dest-job.c \
+   cups-2.4.19/cups/dest-localization.c cups-2.4.19/cups/dest-options.c \
+   cups-2.4.19/cups/dir.c cups-2.4.19/cups/encode.c cups-2.4.19/cups/file.c \
+   cups-2.4.19/cups/getputfile.c cups-2.4.19/cups/globals.c \
+   cups-2.4.19/cups/hash.c cups-2.4.19/cups/http.c cups-2.4.19/cups/http-addr.c \
+   cups-2.4.19/cups/http-addrlist.c cups-2.4.19/cups/http-support.c \
+   cups-2.4.19/cups/ipp.c cups-2.4.19/cups/ipp-file.c cups-2.4.19/cups/ipp-vars.c \
+   cups-2.4.19/cups/ipp-support.c cups-2.4.19/cups/langprintf.c \
+   cups-2.4.19/cups/language.c cups-2.4.19/cups/md5.c cups-2.4.19/cups/md5passwd.c \
+   cups-2.4.19/cups/notify.c cups-2.4.19/cups/options.c cups-2.4.19/cups/pwg-media.c \
+   cups-2.4.19/cups/raster-error.c cups-2.4.19/cups/raster-stream.c \
+   cups-2.4.19/cups/raster-stubs.c cups-2.4.19/cups/request.c \
+   cups-2.4.19/cups/snprintf.c cups-2.4.19/cups/string.c cups-2.4.19/cups/tempfile.c \
+   cups-2.4.19/cups/thread.c cups-2.4.19/cups/transcode.c cups-2.4.19/cups/usersys.c \
+   cups-2.4.19/cups/util.c \
+   cups-2.4.19/cups/ppd.c cups-2.4.19/cups/ppd-attr.c cups-2.4.19/cups/ppd-cache.c \
+   cups-2.4.19/cups/ppd-conflicts.c cups-2.4.19/cups/ppd-custom.c \
+   cups-2.4.19/cups/ppd-emit.c cups-2.4.19/cups/ppd-localize.c \
+   cups-2.4.19/cups/ppd-mark.c cups-2.4.19/cups/ppd-page.c cups-2.4.19/cups/ppd-util.c \
+   cups-2.4.19/cups/raster-interpret.c \
    "$CPPDIR/cupsraster/cups/"
 
 # config.h: CUPS's own ./configure output, generated for our Android target
 # (not the host mac) so its HAVE_*/platform macros match what we're compiling
 # for. Needed by string-private.h and others.
 (
-  cd cups-2.4.10
+  cd cups-2.4.19
   NDK="${ANDROID_NDK_HOME:-$HOME/Library/Android/sdk/ndk/26.1.10909125}"
   TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/darwin-x86_64"
   export CC="$TOOLCHAIN/bin/aarch64-linux-android26-clang"
   export CXX="$TOOLCHAIN/bin/aarch64-linux-android26-clang++"
   ./configure --host=aarch64-linux-android --disable-shared --with-tls=no
 )
-cp cups-2.4.10/config.h "$CPPDIR/cupsraster/cups/"
+cp cups-2.4.19/config.h "$CPPDIR/cupsraster/cups/"
 
 # Apply the checked-in fd-routing / dead-code / Bionic-compat patches so
 # reruns never drift.
 for p in "$ROOT/patches/hplip-3.24.4/"*.patch; do
   patch -p0 -d "$CPPDIR" < "$p"
 done
-for p in "$ROOT/patches/cups-2.4.10/"*.patch; do
+for p in "$ROOT/patches/cups-2.4.19/"*.patch; do
   patch -p0 -d "$CPPDIR" < "$p"
 done
+rm -f "$CPPDIR/cupsraster/cups/thread.c.orig"
 echo "Sources staged and patched. If a patch fails to apply, the upstream layout"
 echo "shifted from the pinned version — regenerate the patch against the new layout."

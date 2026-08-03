@@ -1,5 +1,7 @@
 package dev.jaspreet.printserver.render
 
+import java.io.File
+
 /**
  * JNI bridge to hpcups (HPLIP's raster -> PCL3-GUI encoder).
  *
@@ -35,8 +37,19 @@ object HpcupsNative {
 
     /** Encodes a client-supplied PWG/CUPS raster file to printer-ready PCL3-GUI.
      *  [options] is a CUPS-style options string, e.g. "ColorModel=KGray OutputMode=FastDraft". */
-    fun encodeRasterGuarded(inputPath: String, ppdPath: String, outPath: String, options: String): Int =
-        guard.guarded { encodeRaster(inputPath, ppdPath, outPath, options) }
+    fun encodeRasterGuarded(
+        inputPath: String,
+        ppdPath: String,
+        outPath: String,
+        options: String,
+        limits: RenderingLimits = RenderingLimits(),
+    ): Int {
+        // Keep the validation outside [guard]: malformed input never touches CUPS/hpcups or
+        // acquires their process-global native-call slot. The raw JNI method is private, so
+        // every application call into native raster parsing must pass this gate.
+        PwgRasterValidator(limits).validate(File(inputPath))
+        return guard.guarded { encodeRaster(inputPath, ppdPath, outPath, options) }
+    }
 
     // Raw JNI entry points. Their *names* are load-bearing: hpcupsjni.cpp binds to them via
     // the implicit `Java_dev_jaspreet_printserver_render_HpcupsNative_<methodName>` symbol

@@ -10,6 +10,7 @@ import dev.jaspreet.printserver.render.NativeRenderingPipeline
 import dev.jaspreet.printserver.render.PpdAsset
 import dev.jaspreet.printserver.render.PpmImage
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -23,6 +24,48 @@ import java.io.File
  */
 @RunWith(AndroidJUnit4::class)
 class NativePipelineFixtureTest {
+
+    /**
+     * Exercises the production PWG trust boundary and then the real CUPS/hpcups parser with a
+     * small, valid network-byte-order sRGB fixture. This must run on arm64 Android because the
+     * final encoder is native; JVM tests cover the independent validator and mutation corpus.
+     */
+    @Test
+    fun rendersValidatedPwgRasterToPcl() {
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val raster = File(ctx.cacheDir, "fixture.pwg").apply { writeBytes(validPwgFixture()) }
+        val pcl = File(ctx.cacheDir, "fixture-pwg.pcl").apply { delete() }
+
+        val code = HpcupsNative.encodeRasterGuarded(
+            raster.absolutePath,
+            PpdAsset.extract(ctx).absolutePath,
+            pcl.absolutePath,
+            "ColorModel=RGB OutputMode=Normal",
+        )
+
+        assertEquals("hpcups should accept the independently validated PWG fixture", 0, code)
+        assertTrue("PCL output should be non-trivial", pcl.length() > 100)
+        assertEquals("PCL output should start with ESC", 0x1B, pcl.inputStream().use { it.read() })
+    }
+
+    @Test
+    fun rejectsMalformedPwgBeforeNativeOutputIsOpened() {
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val raster = File(ctx.cacheDir, "fixture-malformed.pwg").apply { writeBytes("RaS2bad".toByteArray()) }
+        val pcl = File(ctx.cacheDir, "fixture-malformed.pcl").apply { delete() }
+
+        try {
+            HpcupsNative.encodeRasterGuarded(
+                raster.absolutePath,
+                PpdAsset.extract(ctx).absolutePath,
+                pcl.absolutePath,
+                "ColorModel=RGB OutputMode=Normal",
+            )
+            throw AssertionError("Malformed PWG input should be rejected")
+        } catch (_: java.io.IOException) {
+            assertFalse("validation must fail before native output is opened", pcl.exists())
+        }
+    }
 
     @Test
     fun rendersOnePagePdfToPcl() {
@@ -210,5 +253,35 @@ class NativePipelineFixtureTest {
                     "(pull with `adb pull`), inspect with `adb logcat -s hpcupsjni gsjni`", e,
             )
         }
+    }
+
+    private fun validPwgFixture(): ByteArray {
+        val width = 64
+        val height = 64
+        val header = ByteArray(1796)
+        "PwgRaster".toByteArray(Charsets.US_ASCII).copyInto(header)
+        header.putNetworkUInt(276, 300)
+        header.putNetworkUInt(280, 300)
+        header.putNetworkUInt(352, 15)
+        header.putNetworkUInt(356, 15)
+        header.putNetworkUInt(372, width)
+        header.putNetworkUInt(376, height)
+        header.putNetworkUInt(384, 8)
+        header.putNetworkUInt(388, 24)
+        header.putNetworkUInt(392, width * 3)
+        header.putNetworkUInt(396, 0)
+        header.putNetworkUInt(400, 19)
+        header.putNetworkUInt(420, 3)
+
+        // One white row (PackBits clear-to-end marker), repeated for all 64 rows.
+        return "RaS2".toByteArray(Charsets.US_ASCII) +
+            header + byteArrayOf((height - 1).toByte(), 128.toByte())
+    }
+
+    private fun ByteArray.putNetworkUInt(offset: Int, value: Int) {
+        this[offset] = (value ushr 24).toByte()
+        this[offset + 1] = (value ushr 16).toByte()
+        this[offset + 2] = (value ushr 8).toByte()
+        this[offset + 3] = value.toByte()
     }
 }

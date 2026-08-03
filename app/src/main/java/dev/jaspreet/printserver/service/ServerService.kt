@@ -19,6 +19,9 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import dev.jaspreet.printserver.MainActivity
 import dev.jaspreet.printserver.R
+import dev.jaspreet.printserver.access.ClientAccessGate
+import dev.jaspreet.printserver.access.ClientAccessSettingsState
+import dev.jaspreet.printserver.access.PolicyClientAccessGate
 import dev.jaspreet.printserver.discovery.DiscoveryAdvertiser
 import dev.jaspreet.printserver.discovery.NsdAdvertiser
 import dev.jaspreet.printserver.activity.ActivityLog
@@ -38,8 +41,7 @@ import dev.jaspreet.printserver.relay.ActivityMonitor
 import dev.jaspreet.printserver.relay.ChannelPool
 import dev.jaspreet.printserver.relay.IppRelayServer
 import dev.jaspreet.printserver.relay.Raw9100Relay
-import dev.jaspreet.printserver.render.NativeRenderingPipeline
-import dev.jaspreet.printserver.render.PpdAsset
+import dev.jaspreet.printserver.render.RendererProcessPipeline
 import dev.jaspreet.printserver.scan.LedmCapabilities
 import dev.jaspreet.printserver.scan.ScanColorMode
 import dev.jaspreet.printserver.scan.ScanPipeline
@@ -69,6 +71,7 @@ class ServerService : Service() {
     private var jobQueue: JobQueue? = null
     private var localIppServer: LocalIppServer? = null
     private var localEsclServer: LocalEsclServer? = null
+    private var clientAccessGate: ClientAccessGate = ClientAccessGate.ALLOW_ALL
     private val pipelineActive = AtomicBoolean(false)
     @Volatile private var servedDeviceId: Int? = null
 
@@ -92,6 +95,23 @@ class ServerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        ClientAccessSettingsState.initialize(applicationContext)
+        clientAccessGate = PolicyClientAccessGate(
+            policyProvider = { ClientAccessSettingsState.settings.value.policy },
+            onRejected = { clientAddress, service ->
+                val now = System.currentTimeMillis()
+                val id = ActivityLog.record(
+                    tier = service.tier,
+                    name = "Blocked ${service.displayName}",
+                    status = ActivityStatus.FAILED,
+                    startedAt = now,
+                    clientAddress = clientAddress,
+                )
+                ActivityLog.update(id) {
+                    it.copy(completedAt = now, failureReason = "Restricted access")
+                }
+            },
+        )
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "printserver:jobs")
             .apply { setReferenceCounted(true) }
@@ -176,7 +196,9 @@ class ServerService : Service() {
             override fun begin() { wakeLock?.acquire(10 * 60 * 1000L) }
             override fun end() { if (wakeLock?.isHeld == true) wakeLock?.release() }
         }
-        val server = IppRelayServer(IPP_PORT, channelPool, monitor).also { ippServer = it }
+        val server = IppRelayServer(
+            IPP_PORT, channelPool, monitor, clientAccessGate = clientAccessGate,
+        ).also { ippServer = it }
         server.start(bindAddr)
         advertiser = NsdAdvertiser(this).also {
             it.advertiseIpp(info.makeAndModel, IPP_PORT, TxtRecords.forIpp(info))
@@ -209,8 +231,7 @@ class ServerService : Service() {
         initialLegacyTransport.close()
 
         // Tier-2: the app itself is the IPP printer; rendering happens on-device.
-        val ppd = PpdAsset.extract(this)
-        val pipeline = NativeRenderingPipeline(cacheDir, ppd.absolutePath, profileId = profile.id)
+        val pipeline = RendererProcessPipeline(this, profileId = profile.id)
         val spoolDir = File(cacheDir, "spool")
         JobQueue.cleanStaleSpool(spoolDir.apply { mkdirs() }) // drop leftovers from a run killed mid-job
         // Unlike ActivityLog's 200-entry cap, this map has none — it's fine because it's
@@ -264,12 +285,15 @@ class ServerService : Service() {
             queue,
             spoolDir,
             supplyStatusProvider = { ServerState.status.value.supplyStatus ?: supplyResult.status },
+            clientAccessGate = clientAccessGate,
         )
             .also { localIppServer = it }
         ipp.start(bindAddr)
 
         // Raw 9100 stays available for PC-driver clients.
-        val relay = Raw9100Relay(RAW_PORT, legacySession).also { rawRelay = it }
+        val relay = Raw9100Relay(
+            RAW_PORT, legacySession, clientAccessGate = clientAccessGate,
+        ).also { rawRelay = it }
         relay.start(bindAddr)
 
         // Scan side (Spec B): open the LEDM scan interface and, if the live ScanCaps
@@ -351,6 +375,7 @@ class ServerService : Service() {
                         }
                     },
                     defaultToneSettings = { ScanToneSettingsState.settings.value },
+                    clientAccessGate = clientAccessGate,
                 ).also { localEsclServer = it }.start(bindAddr)
             } catch (e: Exception) {
                 scanFailureReason = e.message ?: e.javaClass.simpleName

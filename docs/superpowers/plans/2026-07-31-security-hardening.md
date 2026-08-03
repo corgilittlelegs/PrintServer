@@ -17,9 +17,17 @@
 
 ## Phase 3: follow-up hardening
 
-- Add active/reserved job quotas and reservation expiry.
-- Add aggregate spool storage and per-client rate limits.
-- Unify strict HTTP body framing validation.
-- Add renderer decoded-output/page/time/storage caps.
-- Bound eSCL scan storage and delivery.
-- Upgrade Ghostscript/CUPS/JIPP and add native raster validation before considering PWG support again.
+- [x] Add active/reserved job quotas and reservation expiry.
+- [x] Add aggregate spool storage limits and per-client reservation limits.
+- [x] Isolate IPP job operations by client address.
+- [x] Unify strict HTTP body framing validation.
+- [x] Add renderer decoded-output/page/time/storage caps.
+- [x] Bound LEDM response bodies and eSCL scan storage/retention.
+- [x] Upgrade Ghostscript to 10.07.1, CUPS to 2.4.19, and JIPP to 0.7.18.
+- [x] Run Android native fixtures and a gated real-HP PWG physical-output test.
+- [x] Add an independent, bounded PWG raster validator plus deterministic and
+  coverage-guided fuzzing before considering PWG support again.
+- [x] Restore PWG capability only for the verified DeskJet profile after those gates pass.
+- [ ] Run a real macOS PWG submission through the LAN-facing IPP path.
+- [ ] Add optional user-configured authentication only after AirPrint/Windows compatibility design and testing.
+- [x] Add compatibility-preserving restricted-client IPv4/CIDR mode across IPP, raw printing, and eSCL.

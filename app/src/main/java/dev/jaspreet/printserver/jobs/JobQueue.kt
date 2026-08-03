@@ -1,6 +1,7 @@
 package dev.jaspreet.printserver.jobs
 
 import android.util.Log
+import dev.jaspreet.printserver.render.RecoverableRenderingPipeline
 import dev.jaspreet.printserver.render.RenderingPipeline
 import dev.jaspreet.printserver.usb.LegacyPrinterSession
 import java.io.File
@@ -14,6 +15,8 @@ import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
+class JobQueueCapacityException(message: String) : IOException(message)
+
 /**
  * Single-worker FIFO print queue: one physical printer, one USB channel,
  * deliberately no concurrency. Ghostscript/hpcups are not reentrant, so the
@@ -26,11 +29,14 @@ class JobQueue(
      *  the printer's byte stream. */
     private val legacySession: LegacyPrinterSession,
     private val renderTimeoutMs: Long = 120_000,
-    /** Called at most once if a render hangs past [renderTimeoutMs]. The native
-     *  libraries aren't reentrant and can't be safely interrupted mid-call, so a
-     *  hung render leaks its thread and permanently poisons this queue — the
-     *  caller (ServerService) is expected to tear down and let the user restart. */
+    /** Called at most once if a render hangs past [renderTimeoutMs] and the pipeline cannot
+     *  prove that its native renderer was terminated. Recoverable out-of-process renderers
+     *  keep the queue usable after killing their disposable worker process. */
     private val onPipelineStuck: () -> Unit = {},
+    private val maxActiveJobs: Int = 16,
+    private val maxReservedJobsPerClient: Int = 4,
+    private val reservationTtlMs: Long = 5 * 60_000L,
+    private val clockMs: () -> Long = { System.currentTimeMillis() },
     /** Fired on every PrintJob state transition (PENDING at submit/reserve, PROCESSING at
      *  render start, terminal state at the end) — for live activity-feed UI. Unlike
      *  [onJobFinished], this also fires for CANCELED and fires multiple times per job. */
@@ -40,6 +46,7 @@ class JobQueue(
     private val nextId = AtomicInteger(1)
     private val jobs = ConcurrentHashMap<Int, PrintJob>()
     private val pending = LinkedBlockingQueue<PrintJob>()
+    private val admissionLock = Any()
     @Volatile private var running = true
     @Volatile private var poisoned = false
 
@@ -67,12 +74,16 @@ class JobQueue(
         quality: PrintQuality = PrintQuality.NORMAL,
         colorMode: ColorMode = ColorMode.COLOR,
     ): Int {
-        val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format, clientAddress, quality, colorMode)
+        expireReservations()
+        val job = synchronized(admissionLock) {
+            ensureActiveCapacity()
+            PrintJob(nextId.getAndIncrement(), name, spoolFile, format, clientAddress, quality, colorMode)
+                .also { jobs[it.id] = it }
+        }
         // Print-Job's document is already fully streamed to spoolFile by the caller before
         // submit() is invoked, so this is the final size — capture it now, durably, since
         // spoolFile itself gets deleted once the job reaches a terminal state.
         job.spooledBytes = spoolFile.length()
-        jobs[job.id] = job
         pending.put(job)
         onJobStateChanged(job)
         evictOldTerminalJobs()
@@ -93,8 +104,20 @@ class JobQueue(
         quality: PrintQuality = PrintQuality.NORMAL,
         colorMode: ColorMode = ColorMode.COLOR,
     ): Int {
-        val job = PrintJob(nextId.getAndIncrement(), name, spoolFile, format, clientAddress, quality, colorMode)
-        jobs[job.id] = job
+        expireReservations()
+        val job = synchronized(admissionLock) {
+            ensureActiveCapacity()
+            val reservationsForClient = jobs.values.count {
+                it.reservationExpiresAtMs > 0L && sameOwner(it.clientAddress, clientAddress)
+            }
+            if (reservationsForClient >= maxReservedJobsPerClient) {
+                throw JobQueueCapacityException("Too many unfilled job reservations for this client")
+            }
+            PrintJob(nextId.getAndIncrement(), name, spoolFile, format, clientAddress, quality, colorMode).also {
+                it.reservationExpiresAtMs = clockMs() + reservationTtlMs
+                jobs[it.id] = it
+            }
+        }
         onJobStateChanged(job)
         evictOldTerminalJobs()
         return job.id
@@ -125,13 +148,22 @@ class JobQueue(
      * both observe PENDING, append to the same spool file, then enqueue the same job twice.
      */
     fun beginSpooling(id: Int): PrintJob? {
+        expireReservations()
         val job = jobs[id] ?: return null
         synchronized(job) {
             if (job.state != JobState.PENDING) return null
             job.state = JobState.SPOOLING
             job.stateReason = "job-incoming"
+            job.reservationExpiresAtMs = 0L
             return job
         }
+    }
+
+    /** Same as [beginSpooling], but prevents another LAN client from claiming a guessed job id. */
+    fun beginSpoolingOwned(id: Int, clientAddress: String?): PrintJob? {
+        val job = jobs[id] ?: return null
+        if (!sameOwner(job.clientAddress, clientAddress)) return null
+        return beginSpooling(id)
     }
 
     /** Hands a job reserved via [reserve] to the worker now that its document is written. */
@@ -150,12 +182,24 @@ class JobQueue(
         }
     }
 
-    fun get(id: Int): PrintJob? = jobs[id]
+    fun get(id: Int): PrintJob? {
+        expireReservations()
+        return jobs[id]
+    }
+
+    fun getOwned(id: Int, clientAddress: String?): PrintJob? =
+        get(id)?.takeIf { sameOwner(it.clientAddress, clientAddress) }
 
     /** Snapshot of jobs not yet completed/aborted/canceled — for IPP Get-Jobs. */
-    fun listActive(): List<PrintJob> = jobs.values.filter {
+    fun listActive(): List<PrintJob> {
+        expireReservations()
+        return jobs.values.filter {
         it.state == JobState.PENDING || it.state == JobState.SPOOLING || it.state == JobState.PROCESSING
+        }
     }
+
+    fun listActiveForClient(clientAddress: String?): List<PrintJob> =
+        listActive().filter { sameOwner(it.clientAddress, clientAddress) }
 
     /** True if the job was still pending and is now canceled. */
     fun cancel(id: Int): Boolean {
@@ -171,6 +215,44 @@ class JobQueue(
         }
         return canceled
     }
+
+    fun cancelOwned(id: Int, clientAddress: String?): Boolean {
+        val job = getOwned(id, clientAddress) ?: return false
+        return cancel(job.id)
+    }
+
+    /** Expires abandoned Create-Job reservations and releases their active-job slots. */
+    fun expireReservations() {
+        val now = clockMs()
+        val expired = jobs.values.filter { job ->
+            synchronized(job) {
+                if (job.state != JobState.PENDING || job.reservationExpiresAtMs <= 0L ||
+                    job.reservationExpiresAtMs > now
+                ) {
+                    false
+                } else {
+                    job.state = JobState.ABORTED
+                    job.stateReason = "job-reservation-expired"
+                    job.reservationExpiresAtMs = 0L
+                    true
+                }
+            }
+        }
+        expired.forEach {
+            it.spoolFile.delete()
+            onJobStateChanged(it)
+            onJobFinished(it)
+        }
+    }
+
+    private fun ensureActiveCapacity() {
+        val active = jobs.values.count {
+            it.state == JobState.PENDING || it.state == JobState.SPOOLING || it.state == JobState.PROCESSING
+        }
+        if (active >= maxActiveJobs) throw JobQueueCapacityException("Print queue is full")
+    }
+
+    private fun sameOwner(first: String?, second: String?): Boolean = first == second
 
     /**
      * Finalizes a still-PENDING/SPOOLING job as ABORTED with [reason] without ever handing it to the
@@ -241,14 +323,26 @@ class JobQueue(
             try {
                 future.get(renderTimeoutMs, TimeUnit.MILLISECONDS)
             } catch (e: TimeoutException) {
-                // The render call is still running on renderExecutor's thread and can't be
-                // safely killed (native, non-reentrant globals) — poison the queue instead
-                // of risking a second render call running concurrently with this one.
-                Log.e(TAG, "Job ${job.id} (${job.name}) render exceeded ${renderTimeoutMs}ms — poisoning queue")
-                poisoned = true
+                // Kill the disposable renderer before interrupting the Binder caller. The
+                // caller's finally block clears its active PID, so reversing this order can
+                // lose the only verified process identity before recovery gets to use it.
+                val recovered = try {
+                    (pipeline as? RecoverableRenderingPipeline)?.recoverFromTimeout() == true
+                } catch (recoveryError: Exception) {
+                    Log.e(TAG, "Renderer timeout recovery failed", recoveryError)
+                    false
+                }
+                future.cancel(true)
                 job.state = JobState.ABORTED
                 job.stateReason = "render-timeout"
-                onPipelineStuck()
+                if (recovered) {
+                    Log.w(TAG, "Job ${job.id} (${job.name}) render timed out; renderer process terminated")
+                } else {
+                    // Never start another native call unless termination was proven.
+                    Log.e(TAG, "Job ${job.id} (${job.name}) render timed out; poisoning queue")
+                    poisoned = true
+                    onPipelineStuck()
+                }
                 return
             }
             writeToUsb(rendered)
@@ -316,6 +410,9 @@ class JobQueue(
         worker.interrupt()
         renderExecutor.shutdownNow()
         worker.join(joinTimeoutMs)
+        (pipeline as? AutoCloseable)?.let {
+            try { it.close() } catch (_: Exception) {}
+        }
     }
 
     companion object {

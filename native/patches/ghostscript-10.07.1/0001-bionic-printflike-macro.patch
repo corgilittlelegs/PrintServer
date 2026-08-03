@@ -1,0 +1,16 @@
+--- base/gserrors.h
++++ base/gserrors.h
+@@ -159,6 +159,13 @@
+  * of args to the format string after the fmtarg.
+  */
+ 
++/* Android Bionic defines __printflike in terms of the token `printf`. Some
++ * Ghostscript device headers intentionally redefine printf before including
++ * this file, which corrupts Bionic's attribute expansion. Use Ghostscript's
++ * equivalent __printf__ spelling below, which is immune to that macro. */
++#if defined(__ANDROID__)
++#undef __printflike
++#endif
+ #ifndef __printflike
+ #if __GNUC__ > 2 || __GNUC__ == 2 && __GNUC_MINOR__ >= 7
+ #define __printflike(fmtarg, firstvararg) \
