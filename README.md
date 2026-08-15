@@ -170,4 +170,4 @@ See `app/src/main/assets/licenses/` for complete license texts.
 
 ---
 
-<p center="align">Built with ❤️ for driverless printing.</p>
+<p align="center">Built with ❤️ for driverless printing.</p>
